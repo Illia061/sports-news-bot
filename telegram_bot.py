@@ -8,9 +8,34 @@ from urllib.parse import urlparse
 
 class TelegramPoster:
     def __init__(self, bot_token: str = None, channel_id: str = None):
-        self.bot_token = bot_token or os.getenv('TELEGRAM_BOT_TOKEN')
-        self.channel_id = channel_id or os.getenv('TELEGRAM_CHANNEL_ID')
-        self.api_url = f"https://api.telegram.org/bot{self.bot_token}"
+        # Добавляем отладочную информацию
+        print("🔍 ОТЛАДКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ:")
+        print(f"Bot token из параметра: {'Есть' if bot_token else 'Нет'}")
+        print(f"Channel ID из параметра: {'Есть' if channel_id else 'Нет'}")
+        
+        # Получаем из переменных окружения
+        env_bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
+        env_channel_id = os.getenv('TELEGRAM_CHANNEL_ID')
+        
+        print(f"Bot token из env: {'Есть (' + env_bot_token[:10] + '...)' if env_bot_token else 'НЕТ!'}")
+        print(f"Channel ID из env: {env_channel_id if env_channel_id else 'НЕТ!'}")
+        
+        # Показываем все переменные окружения (для отладки)
+        print("\n📋 ВСЕ ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ:")
+        for key, value in os.environ.items():
+            if 'TELEGRAM' in key.upper():
+                print(f"  {key} = {value[:20] + '...' if len(value) > 20 else value}")
+        
+        self.bot_token = bot_token or env_bot_token
+        self.channel_id = channel_id or env_channel_id
+        
+        if self.bot_token:
+            self.api_url = f"https://api.telegram.org/bot{self.bot_token}"
+        
+        print(f"\n✅ Итоговые значения:")
+        print(f"Bot token: {'Установлен' if self.bot_token else 'НЕТ!'}")
+        print(f"Channel ID: {self.channel_id if self.channel_id else 'НЕТ!'}")
+        print("=" * 50)
         
         if not self.bot_token:
             raise ValueError("⚠️  TELEGRAM_BOT_TOKEN не найден в переменных окружения")
@@ -28,6 +53,8 @@ class TelegramPoster:
                 'disable_web_page_preview': False
             }
             
+            print(f"📤 Отправляем в канал: {self.channel_id}")
+            
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, data=data) as response:
                     result = await response.json()
@@ -37,6 +64,7 @@ class TelegramPoster:
                         return True
                     else:
                         print(f"❌ Ошибка отправки: {result.get('description', 'Неизвестная ошибка')}")
+                        print(f"❌ Полный ответ API: {result}")
                         return False
                         
         except Exception as e:
@@ -197,6 +225,7 @@ class TelegramPoster:
         """Тестирует подключение к Telegram API"""
         try:
             url = f"{self.api_url}/getMe"
+            print(f"🔗 Тестируем подключение к: {url}")
             
             async with aiohttp.ClientSession() as session:
                 async with session.get(url) as response:
@@ -210,6 +239,7 @@ class TelegramPoster:
                         return True
                     else:
                         print(f"❌ Ошибка подключения: {result.get('description', 'Неизвестная ошибка')}")
+                        print(f"❌ Полный ответ API: {result}")
                         return False
                         
         except Exception as e:
@@ -238,20 +268,6 @@ def test_telegram_poster():
     print("🧪 ТЕСТИРОВАНИЕ TELEGRAM ПОСТЕРА")
     print("=" * 50)
     
-    # Проверяем переменные окружения
-    bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
-    channel_id = os.getenv('TELEGRAM_CHANNEL_ID')
-    
-    if not bot_token:
-        print("❌ TELEGRAM_BOT_TOKEN не найден в переменных окружения")
-        print("Установите: export TELEGRAM_BOT_TOKEN='ваш_токен'")
-        return
-    
-    if not channel_id:
-        print("❌ TELEGRAM_CHANNEL_ID не найден в переменных окружения")
-        print("Установите: export TELEGRAM_CHANNEL_ID='@ваш_канал' или '-1001234567890'")
-        return
-    
     try:
         poster = TelegramPosterSync()
         
@@ -274,9 +290,18 @@ def test_telegram_poster():
             else:
                 print("❌ Тест не прошел")
         
+    except ValueError as e:
+        print(f"❌ Ошибка конфигурации: {e}")
+        print("\n🔧 ИНСТРУКЦИЯ ПО НАСТРОЙКЕ RAILWAY:")
+        print("1. Зайдите в ваш проект на Railway")
+        print("2. Перейдите в раздел 'Variables'")
+        print("3. Добавьте переменные:")
+        print("   TELEGRAM_BOT_TOKEN = ваш_bot_token")
+        print("   TELEGRAM_CHANNEL_ID = @ваш_канал или -1001234567890")
+        print("4. Перезапустите деплой")
+        
     except Exception as e:
-        print(f"❌ Ошибка тестирования: {e}")
+        print(f"❌ Неожиданная ошибка: {e}")
 
 if __name__ == "__main__":
     test_telegram_poster()
-
