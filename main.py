@@ -175,8 +175,6 @@ def main():
                 print(f"\n🎉 ПУБЛИКАЦИЯ ЗАВЕРШЕНА!")
                 print(f"✅ Успешно опубликовано: {successful_posts}/{len(processed_articles)}")
                     
-                    if successful_posts < len(processed_articles):
-                        print(f"❌ Не удалось опубликовать: {len(processed_articles) - successful_posts}")
             else:
                 print("❌ Не удалось подключиться к Telegram")
                 
