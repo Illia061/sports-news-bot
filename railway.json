@@ -3,10 +3,5 @@
   "build": {
     "command": "pip install -r requirements.txt"
   },
-  "start": "python main.py",
-  "deploy": {
-    "startCommand": "python main.py",
-    "restartPolicyType": "ON_SCHEDULE",
-    "restartPolicyInterval": 60
-  }
+  "start": "python main.py"
 }
