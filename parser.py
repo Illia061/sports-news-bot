@@ -4,22 +4,25 @@ from bs4 import BeautifulSoup
 
 def get_latest_news():
     url = "https://football.ua/"
-    response = requests.get(url)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/114.0.0.0 Safari/537.36"
+    }
+    response = requests.get(url, headers=headers)
     soup = BeautifulSoup(response.text, "html.parser")
 
     articles = []
-    # Обновленный селектор для "Головне за добу" — это блок с классом 'main-news-feed__item'
-    # Но лучше взять новости из раздела 'top-news' или похожих, смотря на html
-    
-    # Пример: новости в блоке с классом "top-news" и теги 'a' внутри
-    news_section = soup.find('div', class_='main-news-feed')
+    # Ищем блок с новостями
+    news_section = soup.find('section', {'class': 'main-news-feed'})
     if not news_section:
         print("Не найден блок новостей")
         return []
 
-    news_blocks = news_section.select('a.main-news-feed__link')[:5]
+    # Ищем все ссылки в этом блоке
+    news_links = news_section.find_all('a', {'class': 'main-news-feed__link'})[:5]
 
-    for tag in news_blocks:
+    for tag in news_links:
         title = tag.get_text(strip=True)
         link = tag['href']
         if not link.startswith('http'):
