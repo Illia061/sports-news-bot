@@ -16,20 +16,53 @@ except ImportError:
     TELEGRAM_AVAILABLE = False
 
 def check_telegram_config():
-    """Проверяет настройки Telegram"""
+    """Проверяет настройки Telegram с отладкой"""
+    print("🔍 ДЕТАЛЬНАЯ ПРОВЕРКА TELEGRAM НАСТРОЕК:")
+    print("=" * 50)
+    
+    # Показываем все переменные окружения
+    telegram_vars = {k: v for k, v in os.environ.items() if 'TELEGRAM' in k.upper()}
+    print(f"📋 Найдено переменных с TELEGRAM: {len(telegram_vars)}")
+    
+    if telegram_vars:
+        for key, value in telegram_vars.items():
+            masked_value = value[:10] + "..." if len(value) > 10 else value
+            print(f"   {key} = {masked_value}")
+    else:
+        print("   ❌ Переменные с TELEGRAM не найдены!")
+    
+    # Проверяем конкретные переменные
     bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
     channel_id = os.getenv('TELEGRAM_CHANNEL_ID')
     
+    print(f"\n🔑 TELEGRAM_BOT_TOKEN: {'✅ Найден' if bot_token else '❌ НЕТ'}")
+    print(f"📢 TELEGRAM_CHANNEL_ID: {'✅ Найден (' + channel_id + ')' if channel_id else '❌ НЕТ'}")
+    
+    # Показываем общее количество всех переменных окружения
+    print(f"\n📊 Всего переменных окружения: {len(os.environ)}")
+    
+    # Показываем несколько примеров переменных (для диагностики)
+    print("🔍 Примеры других переменных окружения:")
+    count = 0
+    for key in list(os.environ.keys())[:5]:  # Показываем первые 5
+        print(f"   {key} = {'...' if len(os.environ[key]) > 20 else os.environ[key]}")
+        count += 1
+    
     if not bot_token:
-        print("❌ TELEGRAM_BOT_TOKEN не найден")
-        print("   Установите: export TELEGRAM_BOT_TOKEN='ваш_токен_бота'")
+        print(f"\n❌ TELEGRAM_BOT_TOKEN не найден")
+        print("   На Railway добавьте переменную:")
+        print("   Name: TELEGRAM_BOT_TOKEN")
+        print("   Value: ваш_токен_бота")
         return False
     
     if not channel_id:
-        print("❌ TELEGRAM_CHANNEL_ID не найден") 
-        print("   Установите: export TELEGRAM_CHANNEL_ID='@ваш_канал'")
+        print(f"\n❌ TELEGRAM_CHANNEL_ID не найден") 
+        print("   На Railway добавьте переменную:")
+        print("   Name: TELEGRAM_CHANNEL_ID")
+        print("   Value: @ваш_канал")
         return False
     
+    print(f"\n✅ Все настройки Telegram найдены!")
     return True
 
 def main():
@@ -45,7 +78,7 @@ def main():
     else:
         print("⚠️  OpenAI API ключ не найден - используем базовые резюме")
     
-    # Telegram
+    # Telegram - ПОДРОБНАЯ ПРОВЕРКА
     telegram_enabled = False
     if TELEGRAM_AVAILABLE:
         if check_telegram_config():
@@ -53,6 +86,13 @@ def main():
             telegram_enabled = True
         else:
             print("⚠️  Telegram не настроен - только обработка новостей")
+            print("\n🛠️  ИНСТРУКЦИЯ ПО НАСТРОЙКЕ RAILWAY:")
+            print("1. Зайдите в ваш проект на Railway")
+            print("2. Перейдите во вкладку 'Variables'")
+            print("3. Добавьте переменные:")
+            print("   TELEGRAM_BOT_TOKEN = ваш_bot_token")
+            print("   TELEGRAM_CHANNEL_ID = @ваш_канал")
+            print("4. Перезапустите деплой")
     else:
         print("⚠️  Telegram модуль недоступен - только обработка новостей")
     
@@ -129,37 +169,34 @@ def main():
             print("🔌 Проверка подключения к Telegram...")
             if poster.test_connection():
                 print("✅ Подключение успешно!")
-                
-                # Спрашиваем подтверждение
-                print(f"\n❓ Опубликовать {len(processed_articles)} новостей в канал?")
-                print("   Введите 'да' или 'yes' для подтверждения, любой другой ввод для отмены:")
-                
-                user_input = input("   Ваш выбор: ").lower().strip()
-                
-                if user_input in ['да', 'yes', 'y', 'д']:
-                    print(f"\n🚀 Начинаем публикацию...")
+                # Публикуем с задержкой в 3 секунды между постами
+                successful_posts = poster.post_articles(processed_articles, delay=3)
                     
-                    # Публикуем с задержкой в 3 секунды между постами
-                    successful_posts = poster.post_articles(processed_articles, delay=3)
-                    
-                    print(f"\n🎉 ПУБЛИКАЦИЯ ЗАВЕРШЕНА!")
-                    print(f"✅ Успешно опубликовано: {successful_posts}/{len(processed_articles)}")
+                print(f"\n🎉 ПУБЛИКАЦИЯ ЗАВЕРШЕНА!")
+                print(f"✅ Успешно опубликовано: {successful_posts}/{len(processed_articles)}")
                     
                     if successful_posts < len(processed_articles):
                         print(f"❌ Не удалось опубликовать: {len(processed_articles) - successful_posts}")
-                else:
-                    print("⏹️  Публикация отменена пользователем")
             else:
                 print("❌ Не удалось подключиться к Telegram")
                 
         except Exception as e:
             print(f"❌ Ошибка публикации в Telegram: {e}")
+            # Показываем полную ошибку для отладки
+            import traceback
+            print("🔍 Подробности ошибки:")
+            traceback.print_exc()
     
     elif not telegram_enabled:
         print(f"\n📢 ПУБЛИКАЦИЯ В TELEGRAM ОТКЛЮЧЕНА")
-        print("Для включения настройте переменные окружения:")
-        print("export TELEGRAM_BOT_TOKEN='ваш_токен'")
-        print("export TELEGRAM_CHANNEL_ID='@ваш_канал'")
+        print("📋 Возможные причины:")
+        print("1. Переменные окружения не настроены на Railway")
+        print("2. Деплой не перезапущен после добавления переменных")
+        print("3. Неправильный формат переменных")
+        print("\n🔧 Для включения:")
+        print("- Добавьте TELEGRAM_BOT_TOKEN на Railway")
+        print("- Добавьте TELEGRAM_CHANNEL_ID на Railway") 
+        print("- Перезапустите деплой")
     
     # Сохраняем результаты
     try:
