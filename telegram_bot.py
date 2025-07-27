@@ -1,9 +1,16 @@
 
 from telegram import Bot
+import asyncio
 import os
 
-bot = Bot(token=os.getenv("TELEGRAM_BOT_TOKEN"))
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
 
-def post_to_telegram(text):
-    chat_id = os.getenv("TELEGRAM_CHANNEL_ID")
-    bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+async def post_to_telegram(message: str):
+    bot = Bot(token=BOT_TOKEN)
+    await bot.send_message(chat_id=CHANNEL_ID, text=message)
+
+# Позволяет запускать из обычного кода
+def send_message(message: str):
+    asyncio.run(post_to_telegram(message))
+
