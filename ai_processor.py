@@ -1,145 +1,212 @@
 
 import openai
-import requests
-from bs4 import BeautifulSoup
 import os
+from typing import Dict, Any
 
 # Инициализируем клиент OpenAI
 client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-def get_article_content(url):
-    """Получает содержимое статьи с сайта"""
+def create_enhanced_summary(article_data: Dict[str, Any]) -> str:
+    """
+    Создает улучшенное резюме новости на основе полных данных статьи
+    """
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                          "AppleWebKit/537.36 (KHTML, like Gecko) "
-                          "Chrome/120.0.0.0 Safari/537.36"
-        }
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
+        title = article_data.get('title', '')
+        content = article_data.get('content', '')
+        summary = article_data.get('summary', '')
         
-        soup = BeautifulSoup(response.text, "html.parser")
+        # Используем контент или готовую выжимку
+        text_to_process = content if content else summary if summary else title
         
-        # Ищем основной текст статьи
-        content_selectors = [
-            '.article-content',
-            '.post-content', 
-            '.news-content',
-            '.content',
-            'article p',
-            '.main-content p'
-        ]
-        
-        content = ""
-        for selector in content_selectors:
-            elements = soup.select(selector)
-            if elements:
-                content = " ".join([elem.get_text(strip=True) for elem in elements])
-                break
-        
-        # Если не нашли специфичные селекторы, берем все параграфы
-        if not content:
-            paragraphs = soup.find_all('p')
-            content = " ".join([p.get_text(strip=True) for p in paragraphs[:5]])
-        
-        return content[:2000] if content else ""  # Ограничиваем длину
-        
-    except Exception as e:
-        print(f"Ошибка при получении контента: {e}")
-        return ""
-
-def summarize_news(title, url):
-    """Создает краткое содержание новости"""
-    try:
-        # Получаем содержимое статьи
-        article_content = get_article_content(url)
-        
-        # Если не удалось получить содержимое, используем только заголовок
-        if not article_content:
-            article_content = title
-        
-        # Формируем промпт для GPT
         prompt = f"""
-Пожалуйста, создай краткое резюме этой футбольной новости на украинском языке.
-Резюме должно быть:
-- Длиной 2-3 предложения
-- Понятным и информативным
-- На украинском языке
+Створи стислий та інформативний виклад цієї футбольної новини українською мовою.
+
+Вимоги:
+- 2-3 речення
+- Зрозуміло та цікаво
+- Збережи всі важливі факти
+- Українською мовою
+- Без зайвих деталей
 
 Заголовок: {title}
-Содержание: {article_content}
+Текст новини: {text_to_process[:1000]}
 
-Краткое резюме:"""
+Стислий виклад:"""
 
-        # Используем новый API OpenAI
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "Ты - помощник, который создает краткие резюме футбольных новостей на украинском языке."},
-                {"role": "user", "content": prompt}
+                {
+                    "role": "system", 
+                    "content": "Ти - експерт зі створення стислих викладів футбольних новин українською мовою. Твоя мета - зробити новину цікавою та зрозумілою."
+                },
+                {
+                    "role": "user", 
+                    "content": prompt
+                }
             ],
             max_tokens=200,
             temperature=0.7
         )
         
-        summary = response.choices[0].message.content.strip()
-        return summary
+        enhanced_summary = response.choices[0].message.content.strip()
+        return enhanced_summary
         
     except Exception as e:
-        print(f"Ошибка при создании резюме: {e}")
-        return f"Резюме недоступно. Заголовок: {title}"
+        print(f"Помилка при створенні покращеного резюме: {e}")
+        # Возвращаем готовую выжимку или заголовок
+        return article_data.get('summary', '') or article_data.get('title', '')
 
-def translate_to_ukrainian(text):
-    """Переводит текст на украинский язык"""
+def format_for_social_media(article_data: Dict[str, Any]) -> str:
+    """
+    Форматирует новость для публикации в социальных сетях
+    """
     try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "Ты - переводчик. Переводи текст на украинский язык, сохраняя смысл и стиль."},
-                {"role": "user", "content": f"Переведи этот текст на украинский язык:\n\n{text}"}
-            ],
-            max_tokens=300,
-            temperature=0.3
-        )
+        title = article_data.get('title', '')
+        summary = article_data.get('summary', '')
         
-        translation = response.choices[0].message.content.strip()
-        return translation
-        
-    except Exception as e:
-        print(f"Ошибка при переводе: {e}")
-        return text  # Возвращаем оригинальный текст если перевод не удался
-
-# Альтернативная функция без OpenAI (если нет API ключа)
-def simple_summarize(title, url):
-    """Простое резюме без использования AI"""
-    try:
-        content = get_article_content(url)
-        if content:
-            # Берем первые 200 символов как резюме
-            summary = content[:200] + "..." if len(content) > 200 else content
-            return f"🔸 {summary}"
+        # Если есть AI резюме, используем его
+        if has_openai_key():
+            ai_summary = create_enhanced_summary(article_data)
         else:
-            return f"🔸 {title}"
-    except:
+            ai_summary = summary
+        
+        # Форматируем пост
+        post = f"⚽ {title}\n\n"
+        
+        if ai_summary and ai_summary != title:
+            post += f"{ai_summary}\n\n"
+        
+        # Добавляем хештеги
+        post += "#футбол #новини #спорт"
+        
+        return post
+        
+    except Exception as e:
+        print(f"Помилка форматування: {e}")
+        return f"⚽ {article_data.get('title', '')}\n\n#футбол #новини"
+
+def download_image(image_url: str, filename: str = None) -> str:
+    """
+    Загружает изображение и возвращает путь к файлу
+    """
+    try:
+        import requests
+        from urllib.parse import urlparse
+        import os
+        
+        if not image_url:
+            return ""
+        
+        # Создаем папку для изображений
+        images_dir = "images"
+        if not os.path.exists(images_dir):
+            os.makedirs(images_dir)
+        
+        # Определяем имя файла
+        if not filename:
+            parsed_url = urlparse(image_url)
+            filename = os.path.basename(parsed_url.path)
+            if not filename or '.' not in filename:
+                filename = f"image_{hash(image_url) % 10000}.jpg"
+        
+        filepath = os.path.join(images_dir, filename)
+        
+        # Загружаем изображение
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+        
+        response = requests.get(image_url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        with open(filepath, 'wb') as f:
+            f.write(response.content)
+        
+        print(f"✅ Изображение сохранено: {filepath}")
+        return filepath
+        
+    except Exception as e:
+        print(f"❌ Ошибка загрузки изображения {image_url}: {e}")
+        return ""
+
+def process_article_for_posting(article_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Полная обработка статьи для публикации
+    """
+    try:
+        # Создаем текст поста
+        post_text = format_for_social_media(article_data)
+        
+        # Загружаем изображение если есть
+        image_path = ""
+        if article_data.get('image_url'):
+            image_path = download_image(article_data['image_url'])
+        
+        return {
+            'title': article_data.get('title', ''),
+            'post_text': post_text,
+            'image_path': image_path,
+            'image_url': article_data.get('image_url', ''),
+            'url': article_data.get('url', ''),
+            'summary': article_data.get('summary', '')
+        }
+        
+    except Exception as e:
+        print(f"Помилка обробки статті: {e}")
+        return {
+            'title': article_data.get('title', ''),
+            'post_text': f"⚽ {article_data.get('title', '')}\n\n#футбол #новини",
+            'image_path': '',
+            'image_url': '',
+            'url': article_data.get('url', ''),
+            'summary': article_data.get('summary', '')
+        }
+
+def has_openai_key() -> bool:
+    """Проверяет наличие OpenAI API ключа"""
+    return bool(os.getenv("OPENAI_API_KEY"))
+
+# Функции для совместимости со старым кодом
+def summarize_news(title: str, url: str) -> str:
+    """Обратная совместимость со старым API"""
+    article_data = {
+        'title': title,
+        'url': url,
+        'content': '',
+        'summary': title
+    }
+    
+    if has_openai_key():
+        return create_enhanced_summary(article_data)
+    else:
         return f"🔸 {title}"
 
-# Функция для тестирования
+def simple_summarize(title: str, url: str) -> str:
+    """Простое резюме без AI"""
+    return f"🔸 {title}"
+
 def test_ai_processor():
-    """Тестирует работу AI процессора"""
-    test_title = "Тестовая новость"
-    test_url = "https://football.ua/"
+    """Тестирование AI процессора"""
+    test_article = {
+        'title': 'Тестова новина про футбол',
+        'content': 'Це тестовий контент новини про футбол. Він містить важливу інформацію.',
+        'summary': 'Короткий зміст тестової новини',
+        'image_url': 'https://example.com/image.jpg',
+        'url': 'https://football.ua/test'
+    }
     
-    print("Тестируем AI процессор...")
+    print("🧪 Тестуємо AI процесор...")
     
-    # Проверяем наличие API ключа
-    if os.getenv("OPENAI_API_KEY"):
-        print("OpenAI API ключ найден, тестируем с AI...")
-        summary = summarize_news(test_title, test_url)
-        print(f"AI резюме: {summary}")
+    if has_openai_key():
+        print("✅ OpenAI API ключ знайдено")
+        summary = create_enhanced_summary(test_article)
+        print(f"📝 AI резюме: {summary}")
     else:
-        print("OpenAI API ключ не найден, используем простое резюме...")
-        summary = simple_summarize(test_title, test_url)
-        print(f"Простое резюме: {summary}")
+        print("⚠️  OpenAI API ключ не знайдено")
+    
+    post = format_for_social_media(test_article)
+    print(f"📱 Пост для соцмереж:\n{post}")
 
 if __name__ == "__main__":
     test_ai_processor()
