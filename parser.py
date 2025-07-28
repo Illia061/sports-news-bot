@@ -1,9 +1,20 @@
-
 import requests
 from bs4 import BeautifulSoup
 import re
 from urllib.parse import urljoin
 import time
+
+def clean_text(text: str) -> str:
+    """Очищает текст от лишних символов"""
+    if not text or not isinstance(text, str):
+        return ""
+    
+    # Удаляем разбитый текст (например, И. н. ш. е.)
+    text = re.sub(r'(\w)\.\s*', r'\1', text)
+    text = re.sub(r'\s*\.\s*', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    text = re.sub(r'[^\x20-\x7Eа-яА-ЯёЁ0-9.,!?:;\-]', '', text)
+    return text
 
 class FootballUATargetedParser:
     def __init__(self):
@@ -13,7 +24,7 @@ class FootballUATargetedParser:
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                           "AppleWebKit/537.36 (KHTML, like Gecko) "
                           "Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept": "text/html floats and doubles,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "uk-UA,uk;q=0.9,en;q=0.8",
             "Connection": "keep-alive",
         })
@@ -23,6 +34,7 @@ class FootballUATargetedParser:
         try:
             response = self.session.get(url, timeout=15)
             response.raise_for_status()
+            response.encoding = 'utf-8'  # Явно устанавливаем UTF-8
             return BeautifulSoup(response.text, "html.parser")
         except Exception as e:
             print(f"Ошибка загрузки {url}: {e}")
@@ -30,8 +42,6 @@ class FootballUATargetedParser:
     
     def find_golovne_za_dobu_section(self, soup):
         """Находит конкретно блок 'ГОЛОВНЕ ЗА ДОБУ'"""
-        
-        # Способ 1: Поиск по точному тексту заголовка
         header_texts = [
             "ГОЛОВНЕ ЗА ДОБУ",
             "головне за добу", 
@@ -39,18 +49,14 @@ class FootballUATargetedParser:
         ]
         
         for header_text in header_texts:
-            # Ищем элемент с таким текстом
             header_element = soup.find(text=re.compile(header_text, re.I))
             if header_element:
                 print(f"✅ Найден заголовок: '{header_text}'")
-                
-                # Находим родительский контейнер секции
                 parent = header_element.parent
                 while parent and parent.name not in ['section', 'div', 'article']:
                     parent = parent.parent
                 
                 if parent:
-                    # Ищем контейнер со списком новостей
                     news_container = parent.find_next(['div', 'ul', 'section'])
                     if news_container:
                         print(f"✅ Найден контейнер новостей после заголовка")
@@ -58,21 +64,15 @@ class FootballUATargetedParser:
                     else:
                         return parent
         
-        # Способ 2: Поиск по классам, которые могут содержать этот блок
         possible_selectors = [
-            # Селекторы для боковой панели/колонки
             '.sidebar',
             '.right-column', 
             '.side-block',
             '.news-sidebar',
-            
-            # Селекторы для блоков новостей
             '.daily-news',
             '.main-today',
             '.today-block',
             '.golovne',
-            
-            # Общие селекторы
             '[class*="today"]',
             '[class*="daily"]',
             '[class*="golovne"]'
@@ -81,19 +81,14 @@ class FootballUATargetedParser:
         for selector in possible_selectors:
             elements = soup.select(selector)
             for element in elements:
-                # Проверяем, содержит ли элемент текст "головне за добу"
                 if re.search(r'головне.*за.*добу', element.get_text(), re.I):
                     print(f"✅ Найден блок через селектор: {selector}")
                     return element
         
-        # Способ 3: Поиск всех блоков на странице, содержащих новости
         print("⚠️  Ищем блок через анализ структуры...")
-        
-        # Ищем все блоки, которые содержат ссылки на новости
         all_divs = soup.find_all(['div', 'section'], class_=True)
         
         for div in all_divs:
-            # Проверяем, есть ли в блоке текст "головне за добу"
             div_text = div.get_text().lower()
             if 'головне' in div_text and 'добу' in div_text:
                 print(f"✅ Найден блок с текстом 'головне за добу'")
@@ -108,17 +103,14 @@ class FootballUATargetedParser:
             return []
         
         news_links = []
-        
-        # Ищем все ссылки в секции
         all_links = section.find_all('a', href=True)
         
         print(f"🔍 Найдено {len(all_links)} ссылок в секции")
         
         for link in all_links:
             href = link.get('href', '')
-            text = link.get_text(strip=True)
+            text = clean_text(link.get_text(strip=True))
             
-            # Фильтруем только новостные ссылки
             if self.is_news_link(href) and len(text) > 10:
                 full_url = urljoin(self.base_url, href)
                 news_links.append({
@@ -126,10 +118,8 @@ class FootballUATargetedParser:
                     'url': full_url,
                     'href': href
                 })
-                
                 print(f"📰 Найдена новость: {text[:50]}...")
         
-        # Убираем дубликаты по URL
         seen_urls = set()
         unique_news = []
         
@@ -138,14 +128,13 @@ class FootballUATargetedParser:
                 unique_news.append(news)
                 seen_urls.add(news['url'])
         
-        return unique_news[:5]  # Возвращаем первые 5
+        return unique_news[:5]
     
     def is_news_link(self, href):
         """Проверяет, является ли ссылка новостной"""
         if not href:
             return False
         
-        # Новостные разделы на football.ua
         news_patterns = [
             r'/news/',
             r'/ukraine/',
@@ -157,7 +146,7 @@ class FootballUATargetedParser:
             r'/germany/',
             r'/france/',
             r'/poland/',
-            r'/\d+[^/]*\.html'  # Ссылки с ID новостей
+            r'/\d+[^/]*\.html'
         ]
         
         return any(re.search(pattern, href) for pattern in news_patterns)
@@ -177,20 +166,15 @@ class FootballUATargetedParser:
             }
         
         try:
-            # Извлекаем основной контент
             content = self.extract_article_content(soup)
-            
-            # Создаем краткую выжимку
             summary = self.create_summary(content, news_item['title'])
-            
-            # Ищем изображение
             image_url = self.extract_main_image(soup, url)
             
             return {
                 'title': news_item['title'],
                 'url': url,
-                'content': content,
-                'summary': summary,
+                'content': clean_text(content),
+                'summary': clean_text(summary),
                 'image_url': image_url
             }
             
@@ -220,12 +204,11 @@ class FootballUATargetedParser:
             if content_elem:
                 paragraphs = content_elem.find_all('p')
                 if paragraphs:
-                    return '\n'.join([p.get_text(strip=True) for p in paragraphs[:4]])
+                    return '\n'.join([clean_text(p.get_text(strip=True)) for p in paragraphs[:4]])
         
-        # Если специфичные селекторы не работают, берем все параграфы
         paragraphs = soup.find_all('p')
         meaningful_paragraphs = [
-            p.get_text(strip=True) for p in paragraphs 
+            clean_text(p.get_text(strip=True)) for p in paragraphs 
             if len(p.get_text(strip=True)) > 30
         ]
         
@@ -234,15 +217,12 @@ class FootballUATargetedParser:
     def create_summary(self, content, title):
         """Создает краткую выжимку"""
         if not content:
-            return title
+            return clean_text(title)
         
-        meaningful_sentences = content
-        
-        if meaningful_sentences:
-            summary = '. '.join(meaningful_sentences)
-            return summary + '.' if not summary.endswith('.') else summary
-        
-        return content[:200] + '...' if len(content) > 200 else content
+        content = clean_text(content)
+        sentences = [s.strip() for s in content.split('. ') if s.strip()]
+        summary = '. '.join(sentences[:2]) + '.' if sentences else content[:200] + '...'
+        return clean_text(summary)
     
     def extract_main_image(self, soup, base_url):
         """Извлекает главное изображение статьи"""
@@ -266,7 +246,6 @@ class FootballUATargetedParser:
             
             if image_url:
                 full_image_url = urljoin(base_url, image_url)
-                # Проверяем, что это не маленькая иконка
                 if not any(small in image_url.lower() for small in ['icon', 'logo', 'thumb', 'avatar']):
                     return full_image_url
         
@@ -297,27 +276,21 @@ class FootballUATargetedParser:
         
         print(f"✅ Найдено {len(news_items)} новостей в блоке 'ГОЛОВНЕ ЗА ДОБУ'")
         
-        # Получаем полные данные для каждой новости
         full_articles = []
         
         for i, news_item in enumerate(news_items, 1):
             print(f"📖 Обрабатываем новость {i}/{len(news_items)}: {news_item['title'][:50]}...")
-            
             article_data = self.get_full_article_data(news_item)
             full_articles.append(article_data)
-            
-            # Небольшая пауза между запросами
             time.sleep(1)
         
         return full_articles
 
-# Функция для совместимости с существующим кодом
 def get_latest_news():
     """Функция-обертка для совместимости"""
     parser = FootballUATargetedParser()
     articles = parser.get_latest_news()
     
-    # Конвертируем в формат, ожидаемый основным кодом
     result = []
     for article in articles:
         result.append({
