@@ -236,9 +236,7 @@ class FootballUATargetedParser:
         if not content:
             return title
         
-        # Берем первые 2-3 предложения
-        sentences = re.split(r'[.!?]+', content)
-        meaningful_sentences = sentences
+        meaningful_sentences = content
         
         if meaningful_sentences:
             summary = '. '.join(meaningful_sentences)
