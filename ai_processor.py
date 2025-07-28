@@ -1,15 +1,46 @@
 
-import openai
 import os
 from typing import Dict, Any
 
-# Инициализируем клиент OpenAI
-client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Безопасная инициализация OpenAI клиента
+client = None
+OPENAI_AVAILABLE = False
+
+def init_openai_client():
+    """Безопасная инициализация OpenAI клиента"""
+    global client, OPENAI_AVAILABLE
+    
+    try:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            print("⚠️  OPENAI_API_KEY не найден - AI функции отключены")
+            return False
+        
+        import openai
+        client = openai.OpenAI(api_key=api_key)
+        OPENAI_AVAILABLE = True
+        print("✅ OpenAI клиент инициализирован")
+        return True
+        
+    except ImportError:
+        print("⚠️  Библиотека openai не установлена - AI функции отключены")
+        return False
+    except Exception as e:
+        print(f"⚠️  Ошибка инициализации OpenAI: {e} - AI функции отключены")
+        return False
 
 def create_enhanced_summary(article_data: Dict[str, Any]) -> str:
     """
     Создает улучшенное резюме новости на основе полных данных статьи
     """
+    # Инициализируем клиент при первом использовании
+    if client is None:
+        init_openai_client()
+    
+    if not OPENAI_AVAILABLE or not client:
+        # Возвращаем базовое резюме без AI
+        return article_data.get('summary', '') or article_data.get('title', '')
+    
     try:
         title = article_data.get('title', '')
         content = article_data.get('content', '')
@@ -53,7 +84,7 @@ def create_enhanced_summary(article_data: Dict[str, Any]) -> str:
         return enhanced_summary
         
     except Exception as e:
-        print(f"Помилка при створенні покращеного резюме: {e}")
+        print(f"❌ Помилка при створенні покращеного резюме: {e}")
         # Возвращаем готовую выжимку или заголовок
         return article_data.get('summary', '') or article_data.get('title', '')
 
@@ -83,7 +114,7 @@ def format_for_social_media(article_data: Dict[str, Any]) -> str:
         return post
         
     except Exception as e:
-        print(f"Помилка форматування: {e}")
+        print(f"❌ Помилка форматування: {e}")
         return f"⚽ {article_data.get('title', '')}\n\n#футбол #новини"
 
 def download_image(image_url: str, filename: str = None) -> str:
@@ -153,7 +184,7 @@ def process_article_for_posting(article_data: Dict[str, Any]) -> Dict[str, Any]:
         }
         
     except Exception as e:
-        print(f"Помилка обробки статті: {e}")
+        print(f"❌ Помилка обробки статті: {e}")
         return {
             'title': article_data.get('title', ''),
             'post_text': f"⚽ {article_data.get('title', '')}\n\n#футбол #новини",
@@ -164,8 +195,11 @@ def process_article_for_posting(article_data: Dict[str, Any]) -> Dict[str, Any]:
         }
 
 def has_openai_key() -> bool:
-    """Проверяет наличие OpenAI API ключа"""
-    return bool(os.getenv("OPENAI_API_KEY"))
+    """Проверяет наличие OpenAI API ключа и возможность использования AI"""
+    if client is None:
+        init_openai_client()
+    
+    return OPENAI_AVAILABLE and bool(os.getenv("OPENAI_API_KEY"))
 
 # Функции для совместимости со старым кодом
 def summarize_news(title: str, url: str) -> str:
@@ -188,6 +222,13 @@ def simple_summarize(title: str, url: str) -> str:
 
 def test_ai_processor():
     """Тестирование AI процессора"""
+    print("🧪 ТЕСТИРОВАНИЕ AI ПРОЦЕССОРА")
+    print("=" * 50)
+    
+    # Проверяем инициализацию
+    print("🔧 Инициализация OpenAI...")
+    init_openai_client()
+    
     test_article = {
         'title': 'Тестова новина про футбол',
         'content': 'Це тестовий контент новини про футбол. Він містить важливу інформацію.',
@@ -196,17 +237,23 @@ def test_ai_processor():
         'url': 'https://football.ua/test'
     }
     
-    print("🧪 Тестуємо AI процесор...")
+    print(f"🤖 OpenAI доступен: {'Да' if has_openai_key() else 'Нет'}")
     
     if has_openai_key():
         print("✅ OpenAI API ключ знайдено")
-        summary = create_enhanced_summary(test_article)
-        print(f"📝 AI резюме: {summary}")
+        try:
+            summary = create_enhanced_summary(test_article)
+            print(f"📝 AI резюме: {summary}")
+        except Exception as e:
+            print(f"❌ Ошибка AI резюме: {e}")
     else:
-        print("⚠️  OpenAI API ключ не знайдено")
+        print("⚠️  OpenAI API ключ не знайдено или недоступен")
     
+    print("\n📱 Тестируем форматирование поста...")
     post = format_for_social_media(test_article)
     print(f"📱 Пост для соцмереж:\n{post}")
+    
+    print("\n✅ Тестирование завершено")
 
 if __name__ == "__main__":
     test_ai_processor()
