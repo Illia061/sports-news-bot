@@ -29,6 +29,19 @@ def init_openai_client():
         print(f"⚠️  Ошибка инициализации OpenAI: {e} - AI функции отключены")
         return False
 
+def clean_text(text: str) -> str:
+    """Очищает текст от лишних символов, включая разбитый формат"""
+    if not text or not isinstance(text, str):
+        return ""
+    
+    # Удаляем разбитый текст (например, И. н. ш. е.)
+    text = re.sub(r'(\w)\.\s*', r'\1', text)  # Удаляем точки между символами
+    text = re.sub(r'\s*\.\s*', ' ', text)     # Удаляем лишние точки
+    text = re.sub(r'\s+', ' ', text).strip()  # Удаляем лишние пробелы
+    # Удаляем непечатные символы, сохраняя кириллицу
+    text = re.sub(r'[^\x20-\x7Eа-яА-ЯёЁ0-9.,!?:;\-]', '', text)
+    return text
+
 def clean_intro(text: str) -> str:
     """Очищает текст от служебной информации"""
     if not text or not isinstance(text, str):
@@ -36,12 +49,11 @@ def clean_intro(text: str) -> str:
     
     text = text.strip()
     
-    # Проверяем, не разбит ли текст на символы (как в вашем примере)
+    # Проверяем, не разбит ли текст на символы
     if len(text) > 50 and text.count('. ') > len(text) // 10:
-        # Если много точек с пробелами - возможно, текст разбит на символы
-        print("⚠️  Обнаружен текст, разбитый на символы - пропускаем очистку")
-        return text
-
+        print("⚠️  Обнаружен текст, разбитый на символы - применяем очистку")
+        text = clean_text(text)
+    
     # Удалить даты в начале
     text = re.sub(r"^(Сьогодні|Вчора)(,)?\s+\d{1,2}\s+\w+\s+\d{4}", "", text, flags=re.IGNORECASE)
     text = re.sub(r"^\d{1,2}\s+\w+\s+\d{4},\s*\d{1,2}:\d{2}", "", text)
@@ -51,7 +63,7 @@ def clean_intro(text: str) -> str:
     text = re.sub(r"^([А-ЯІЇЄҐа-яіїєґ\s]+) – ", "", text)
 
     return text.strip()
-    
+
 def create_enhanced_summary(article_data: Dict[str, Any]) -> str:
     """Создает улучшенное резюме новости на основе полных данных статьи"""
     # Инициализируем клиент при первом использовании
@@ -60,7 +72,7 @@ def create_enhanced_summary(article_data: Dict[str, Any]) -> str:
     
     if not OPENAI_AVAILABLE or not client:
         # Возвращаем базовое резюме без AI
-        return article_data.get('summary', '') or article_data.get('title', '')
+        return clean_text(article_data.get('summary', '') or article_data.get('title', ''))
     
     try:
         title = article_data.get('title', '')
@@ -69,26 +81,27 @@ def create_enhanced_summary(article_data: Dict[str, Any]) -> str:
         
         # Используем контент или готовую выжимку
         text_to_process = content if content else summary if summary else title
+        text_to_process = clean_text(text_to_process)  # Очищаем перед отправкой в OpenAI
         
         print(f"🤖 Создаем AI резюме для: {title[:50]}...")
         print(f"📝 Исходный текст (первые 200 символов): {repr(text_to_process[:200])}")
         
-        # Попробуем английский промпт - возможно проблема в украинском тексте промпта
-        prompt = f"""Please create a brief summary of this Ukrainian football news article.
+        # Упрощенный и более точный промпт
+        prompt = f"""Створи коротке резюме для статті про футбол українською мовою.
 
-REQUIREMENTS:
-- Write the summary in Ukrainian language
-- If the article contains a rating/top list (like "Топ-10"), include it completely with all positions
-- Keep all names, numbers, and positions from rankings
-- Write naturally in Ukrainian, don't break words into separate characters
-- Maximum 3-4 sentences plus the complete ranking if present
+Вимоги:
+- Пиши природною українською мовою, уникай розбиття слів на окремі символи.
+- Збережи всі імена, цифри та позиції в рейтингах (наприклад, "Топ-10").
+- Якщо стаття містить рейтинг або список, включи його повністю.
+- Максимум 3-4 речення, плюс повний рейтинг, якщо він є.
+- Уникай додавання крапок між символами (наприклад, "І. н. ш. е.").
 
-Title: {title}
+Заголовок: {title}
 
-Article content:
-{text_to_process}
+Текст статті:
+{text_to_process[:1000]}  # Ограничиваем для экономии токенов
 
-Please provide the summary in Ukrainian:"""
+Резюме українською:"""
 
         print("🔄 Отправляем запрос в OpenAI...")
         
@@ -97,9 +110,8 @@ Please provide the summary in Ukrainian:"""
             messages=[
                 {
                     "role": "system", 
-                    "content": """You are an expert at creating brief summaries of football news in Ukrainian language.
-IMPORTANT: If the news contains any rating, top list, or numbered list - you MUST include it completely.
-Always write in natural Ukrainian language. Never break words into separate characters."""
+                    "content": """Ти експерт зі створення коротких резюме футбольних новин українською мовою.
+Важливо: Пиши природною українською, не розбивай слова на окремі символи. Зберігай усі рейтинги та списки повністю."""
                 },
                 {
                     "role": "user", 
@@ -107,89 +119,34 @@ Always write in natural Ukrainian language. Never break words into separate char
                 }
             ],
             max_tokens=600,
-            temperature=0.2,  # Еще меньше температуру для стабильности
+            temperature=0.3,  # Збільшуємо температуру для кращої якості
             top_p=0.9,
             frequency_penalty=0.0,
             presence_penalty=0.0
         )
         
         enhanced_summary = response.choices[0].message.content.strip()
+        enhanced_summary = clean_text(enhanced_summary)  # Очищаем результат
         
         print(f"🔍 AI ответ (первые 200 символов): {repr(enhanced_summary[:200])}")
         print(f"📊 Длина ответа: {len(enhanced_summary)} символов")
         
-        # Детальная проверка на "разбитый" текст
+        # Проверка на разбитый текст
         char_count = sum(1 for c in enhanced_summary if c == '.')
-        space_count = sum(1 for c in enhanced_summary if c == ' ')
         total_chars = len(enhanced_summary)
         
-        print(f"🔍 Анализ текста: точек={char_count}, пробелов={space_count}, всего={total_chars}")
-        
-        # Если слишком много точек относительно длины - возможно текст разбит
         if total_chars > 100 and char_count > total_chars / 20:
-            print("❌ ОБНАРУЖЕН РАЗБИТЫЙ ТЕКСТ!")
-            print(f"❌ Проблемный ответ: {enhanced_summary[:300]}")
-            
-            # Пробуем еще раз с другим промптом
-            print("🔄 Пробуем упрощенный промпт...")
-            
-            simple_prompt = f"""Summarize this Ukrainian football article in Ukrainian. Include any rankings completely.
-
-{title}
-
-{text_to_process[:500]}
-
-Summary in Ukrainian:"""
-            
-            response2 = client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "user", "content": simple_prompt}
-                ],
-                max_tokens=400,
-                temperature=0.1
-            )
-            
-            enhanced_summary2 = response2.choices[0].message.content.strip()
-            print(f"🔍 Второй AI ответ: {repr(enhanced_summary2[:200])}")
-            
-            # Если и второй ответ плохой, используем fallback
-            char_count2 = sum(1 for c in enhanced_summary2 if c == '.')
-            if len(enhanced_summary2) > 100 and char_count2 > len(enhanced_summary2) / 20:
-                print("❌ И второй ответ разбитый! Используем fallback...")
-                # Простая обработка как fallback
-                sentences = []
-                for line in text_to_process.split('\n'):
-                    line = line.strip()
-                    if len(line) > 20 and not line.startswith(('Топ-', '1.', '2.')):
-                        sentences.append(line)
-                    if len(sentences) >= 2:
-                        break
-                
-                result = '. '.join(sentences[:2])
-                
-                # Добавляем рейтинг
-                if 'Топ-' in text_to_process:
-                    lines = text_to_process.split('\n')
-                    rating_started = False
-                    rating_lines = []
-                    
-                    for line in lines:
-                        line = line.strip()
-                        if 'Топ-' in line and ':' in line:
-                            rating_started = True
-                            rating_lines.append(line)
-                        elif rating_started and line and (line[0].isdigit() or ';' in line):
-                            rating_lines.append(line)
-                        elif rating_started and not line:
-                            break
-                    
-                    if rating_lines:
-                        result += '\n\n' + '\n'.join(rating_lines)
-                
-                return result
-            else:
-                enhanced_summary = enhanced_summary2
+            print("❌ ОБНАРУЖЕН РАЗБИТЫЙ ТЕКСТ! Используем fallback...")
+            # Fallback: берем первые 2-3 предложения из контента
+            sentences = [s.strip() for s in text_to_process.split('. ') if s.strip()]
+            result = '. '.join(sentences[:2]) + '.'
+            # Добавляем рейтинг, если є
+            if 'Топ-' in text_to_process:
+                lines = text_to_process.split('\n')
+                rating_lines = [line for line in lines if line.strip() and ('Топ-' in line or line[0].isdigit())]
+                if rating_lines:
+                    result += '\n\n' + '\n'.join(rating_lines)
+            return clean_text(result)
         
         print(f"✅ AI резюме создано успешно")
         return enhanced_summary
@@ -198,12 +155,8 @@ Summary in Ukrainian:"""
         print(f"❌ Помилка при створенні покращеного резюме: {e}")
         import traceback
         traceback.print_exc()
-        
-        # Fallback обработка
-        content = article_data.get('content', '')
-        if content:
-            return content[:300] + "..." if len(content) > 300 else content
-        return article_data.get('summary', '') or article_data.get('title', '')
+        # Fallback: чистим исходный текст
+        return clean_text(article_data.get('summary', '') or article_data.get('title', ''))
 
 def format_for_social_media(article_data: Dict[str, Any]) -> str:
     """Форматирует новость для публикации в социальных сетях"""
@@ -217,12 +170,10 @@ def format_for_social_media(article_data: Dict[str, Any]) -> str:
         # Используем AI или базовое резюме
         if has_openai_key():
             print("🤖 Используем AI для создания резюме...")
-            ai_summary = create_enhanced_summary(article_data)
-            # НЕ применяем clean_intro к AI резюме, так как оно уже обработано
-            final_summary = ai_summary
+            final_summary = create_enhanced_summary(article_data)
         else:
             print("📝 Используем базовое резюме...")
-            final_summary = clean_intro(summary or content[:200])
+            final_summary = clean_text(summary or content[:200])
 
         # Форматируем пост
         post = f"<b>⚽ {title}</b>\n\n"
@@ -328,7 +279,6 @@ def has_openai_key() -> bool:
     
     return OPENAI_AVAILABLE and bool(os.getenv("OPENAI_API_KEY"))
 
-# Функции для совместимости со старым кодом
 def summarize_news(title: str, url: str) -> str:
     """Обратная совместимость со старым API"""
     article_data = {
