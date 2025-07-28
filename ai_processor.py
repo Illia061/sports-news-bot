@@ -71,56 +71,135 @@ def create_enhanced_summary(article_data: Dict[str, Any]) -> str:
         text_to_process = content if content else summary if summary else title
         
         print(f"🤖 Создаем AI резюме для: {title[:50]}...")
-        print(f"📝 Обрабатываем текст длиной: {len(text_to_process)} символов")
+        print(f"📝 Исходный текст (первые 200 символов): {repr(text_to_process[:200])}")
         
-        # Улучшенный промпт с акцентом на рейтинги
-        prompt = f"""Створи стислий виклад цієї футбольної новини українською мовою.
+        # Попробуем английский промпт - возможно проблема в украинском тексте промпта
+        prompt = f"""Please create a brief summary of this Ukrainian football news article.
 
-ВАЖЛИВО:
-- Якщо в статті є рейтинг або список (топ-10, топ-5) - ОБОВ'ЯЗКОВО включи його повністю
-- Зберігай всі числа, позиції та імена з рейтингів
-- Пиши природною українською мовою
-- Не розбивай текст на окремі символи
-- Максимум 3-4 речення + повний рейтинг якщо є
+REQUIREMENTS:
+- Write the summary in Ukrainian language
+- If the article contains a rating/top list (like "Топ-10"), include it completely with all positions
+- Keep all names, numbers, and positions from rankings
+- Write naturally in Ukrainian, don't break words into separate characters
+- Maximum 3-4 sentences plus the complete ranking if present
 
-Заголовок: {title}
+Title: {title}
 
-Повний текст новини:
+Article content:
 {text_to_process}
 
-Створи стислий виклад:"""
+Please provide the summary in Ukrainian:"""
 
+        print("🔄 Отправляем запрос в OpenAI...")
+        
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
                 {
                     "role": "system", 
-                    "content": """Ти - експерт зі створення стислих викладів футбольних новин українською мовою.
-ГОЛОВНЕ ПРАВИЛО: Якщо в новині є рейтинг, топ-список або нумерований список - ОБОВ'ЯЗКОВО включай його повністю.
-Пиши природною українською мовою, не розбивай слова на символи."""
+                    "content": """You are an expert at creating brief summaries of football news in Ukrainian language.
+IMPORTANT: If the news contains any rating, top list, or numbered list - you MUST include it completely.
+Always write in natural Ukrainian language. Never break words into separate characters."""
                 },
                 {
                     "role": "user", 
                     "content": prompt
                 }
             ],
-            max_tokens=500,
-            temperature=0.3  # Зменшили температуру для более стабильного вывода
+            max_tokens=600,
+            temperature=0.2,  # Еще меньше температуру для стабильности
+            top_p=0.9,
+            frequency_penalty=0.0,
+            presence_penalty=0.0
         )
         
         enhanced_summary = response.choices[0].message.content.strip()
         
-        # Проверяем, не получили ли мы "разбитый" текст
-        if len(enhanced_summary) > 50 and enhanced_summary.count('. ') > len(enhanced_summary) // 10:
-            print("⚠️  AI вернул разбитый текст, используем оригинальный")
-            return text_to_process[:300] + "..." if len(text_to_process) > 300 else text_to_process
+        print(f"🔍 AI ответ (первые 200 символов): {repr(enhanced_summary[:200])}")
+        print(f"📊 Длина ответа: {len(enhanced_summary)} символов")
         
-        print(f"✅ AI резюме создано: {len(enhanced_summary)} символов")
+        # Детальная проверка на "разбитый" текст
+        char_count = sum(1 for c in enhanced_summary if c == '.')
+        space_count = sum(1 for c in enhanced_summary if c == ' ')
+        total_chars = len(enhanced_summary)
+        
+        print(f"🔍 Анализ текста: точек={char_count}, пробелов={space_count}, всего={total_chars}")
+        
+        # Если слишком много точек относительно длины - возможно текст разбит
+        if total_chars > 100 and char_count > total_chars / 20:
+            print("❌ ОБНАРУЖЕН РАЗБИТЫЙ ТЕКСТ!")
+            print(f"❌ Проблемный ответ: {enhanced_summary[:300]}")
+            
+            # Пробуем еще раз с другим промптом
+            print("🔄 Пробуем упрощенный промпт...")
+            
+            simple_prompt = f"""Summarize this Ukrainian football article in Ukrainian. Include any rankings completely.
+
+{title}
+
+{text_to_process[:500]}
+
+Summary in Ukrainian:"""
+            
+            response2 = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "user", "content": simple_prompt}
+                ],
+                max_tokens=400,
+                temperature=0.1
+            )
+            
+            enhanced_summary2 = response2.choices[0].message.content.strip()
+            print(f"🔍 Второй AI ответ: {repr(enhanced_summary2[:200])}")
+            
+            # Если и второй ответ плохой, используем fallback
+            char_count2 = sum(1 for c in enhanced_summary2 if c == '.')
+            if len(enhanced_summary2) > 100 and char_count2 > len(enhanced_summary2) / 20:
+                print("❌ И второй ответ разбитый! Используем fallback...")
+                # Простая обработка как fallback
+                sentences = []
+                for line in text_to_process.split('\n'):
+                    line = line.strip()
+                    if len(line) > 20 and not line.startswith(('Топ-', '1.', '2.')):
+                        sentences.append(line)
+                    if len(sentences) >= 2:
+                        break
+                
+                result = '. '.join(sentences[:2])
+                
+                # Добавляем рейтинг
+                if 'Топ-' in text_to_process:
+                    lines = text_to_process.split('\n')
+                    rating_started = False
+                    rating_lines = []
+                    
+                    for line in lines:
+                        line = line.strip()
+                        if 'Топ-' in line and ':' in line:
+                            rating_started = True
+                            rating_lines.append(line)
+                        elif rating_started and line and (line[0].isdigit() or ';' in line):
+                            rating_lines.append(line)
+                        elif rating_started and not line:
+                            break
+                    
+                    if rating_lines:
+                        result += '\n\n' + '\n'.join(rating_lines)
+                
+                return result
+            else:
+                enhanced_summary = enhanced_summary2
+        
+        print(f"✅ AI резюме создано успешно")
         return enhanced_summary
         
     except Exception as e:
         print(f"❌ Помилка при створенні покращеного резюме: {e}")
-        # Возвращаем оригинальный текст без обработки
+        import traceback
+        traceback.print_exc()
+        
+        # Fallback обработка
         content = article_data.get('content', '')
         if content:
             return content[:300] + "..." if len(content) > 300 else content
