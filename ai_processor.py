@@ -1,5 +1,6 @@
 
 import os
+import re
 from typing import Dict, Any
 
 # Безопасная инициализация OpenAI клиента
@@ -28,7 +29,22 @@ def init_openai_client():
     except Exception as e:
         print(f"⚠️  Ошибка инициализации OpenAI: {e} - AI функции отключены")
         return False
+        
+def clean_intro(text: str) -> str:
+    text = text.strip()
 
+    # Удалить фразы типа "Сьогодні, 27 липня 2025" или "Вчора, 26 липня"
+    text = re.sub(r"^(Сьогодні|Вчора)(,)?\s+\d{1,2}\s+\w+\s+\d{4}", "", text, flags=re.IGNORECASE)
+
+    # Удалить дату и время в начале (например: "28 липня 2025, 18:39")
+    text = re.sub(r"^\d{1,2}\s+\w+\s+\d{4},\s*\d{1,2}:\d{2}", "", text)
+
+    # Удалить фразы с категориями типа "Інше – ", "Італія – Серія А – "
+    text = re.sub(r"^([А-ЯІЇЄҐа-яіїєґ\s]+) –(\s[А-Яа-я\s]+)? – ", "", text)
+    text = re.sub(r"^([А-ЯІЇЄҐа-яіїєґ\s]+) – ", "", text)
+
+    return text.strip()
+    
 def create_enhanced_summary(article_data: Dict[str, Any]) -> str:
     """
     Создает улучшенное резюме новости на основе полных данных статьи
@@ -56,7 +72,6 @@ def create_enhanced_summary(article_data: Dict[str, Any]) -> str:
 - Зрозуміло та цікаво
 - Збережи всі важливі факти
 - Українською мовою
-- Без зайвих деталей
 - Якщо у статті є рейтинг - публікуєш його повністю
 - Якщо у статті є пряма мова - публікуєш стислу вижимку на 3-4 речення
 
@@ -70,7 +85,8 @@ def create_enhanced_summary(article_data: Dict[str, Any]) -> str:
             messages=[
                 {
                     "role": "system", 
-                    "content": "Ти - експерт зі створення стислих викладів футбольних новин українською мовою. Твоя мета - зробити новину цікавою та зрозумілою."
+                    "content": "Ти - експерт зі створення стислих викладів футбольних новин українською мовою. Твоя мета - зробити новину цікавою та зрозумілою. Вимоги: Зрозуміло та цікаво, Збережи всі важливі факти, Якщо у статті є рейтинг - публікуєш його повністю, Якщо у статті є пряма мова - публікуєш стислу вижимку на 3-4 речення
+                    "
                 },
                 {
                     "role": "user", 
@@ -99,9 +115,10 @@ def format_for_social_media(article_data: Dict[str, Any]) -> str:
 
         # Если есть AI резюме, используем его
         if has_openai_key():
-            ai_summary = create_enhanced_summary(article_data)
+            ai_summary = create_enhanced_summary({"title": title, "content": text})
+            ai_summary = clean_intro(ai_summary)
         else:
-            ai_summary = summary
+            ai_summary =  clean_intro(summary)
 
         # Убираем возможные мусорные категории или даты из резюме (простейшая фильтрация)
         unwanted_prefixes = ["Інше", "Італія", "Іспанія", "Німеччина", "Чемпіонат", "Сьогодні", "Вчора"]
