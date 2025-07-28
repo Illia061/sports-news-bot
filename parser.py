@@ -238,10 +238,10 @@ class FootballUATargetedParser:
         
         # Берем первые 2-3 предложения
         sentences = re.split(r'[.!?]+', content)
-        meaningful_sentences = [s.strip() for s in sentences if len(s.strip()) > 20]
+       #meaningful_sentences = [s.strip() for s in sentences if len(s.strip()) > 20]
         
         if meaningful_sentences:
-            summary = '. '.join(meaningful_sentences[:2])
+            summary = '. '.join(sentences)
             return summary + '.' if not summary.endswith('.') else summary
         
         return content[:200] + '...' if len(content) > 200 else content
