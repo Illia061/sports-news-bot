@@ -1,4 +1,3 @@
-
 import requests
 from bs4 import BeautifulSoup
 import re
@@ -177,7 +176,7 @@ class FootballUATargetedParser:
             }
         
         try:
-            # Извлекаем основной контент
+            # Извлекаем основной контент (РАСШИРЕННЫЙ для AI)
             content = self.extract_article_content(soup)
             
             # Создаем краткую выжимку
@@ -205,31 +204,60 @@ class FootballUATargetedParser:
             }
     
     def extract_article_content(self, soup):
-        """Извлекает основной текст статьи"""
+        """Извлекает основной текст статьи (РАСШИРЕННАЯ ВЕРСИЯ для AI)"""
         content_selectors = [
             '.article-content',
             '.news-content',
             '.post-content',
             '.content',
             'article',
-            '.main-text'
+            '.main-text',
+            '.article-body',
+            '.news-body'
         ]
+        
+        # Сначала пытаемся найти основной контейнер статьи
+        main_content = ""
         
         for selector in content_selectors:
             content_elem = soup.select_one(selector)
             if content_elem:
+                # Убираем ненужные элементы
+                for unwanted in content_elem.find_all(['script', 'style', 'iframe', 'div[class*="ad"]', 'div[class*="banner"]']):
+                    unwanted.decompose()
+                
+                # Извлекаем все параграфы (не ограничиваем для AI)
                 paragraphs = content_elem.find_all('p')
                 if paragraphs:
-                    return '\n'.join([p.get_text(strip=True) for p in paragraphs[:4]])
+                    main_content = '\n'.join([p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 20])
+                    break
         
-        # Если специфичные селекторы не работают, берем все параграфы
-        paragraphs = soup.find_all('p')
-        meaningful_paragraphs = [
-            p.get_text(strip=True) for p in paragraphs 
-            if len(p.get_text(strip=True)) > 30
-        ]
+        # Если основной контейнер не найден, ищем все параграфы на странице
+        if not main_content:
+            all_paragraphs = soup.find_all('p')
+            meaningful_paragraphs = []
+            
+            for p in all_paragraphs:
+                text = p.get_text(strip=True)
+                # Фильтруем слишком короткие и служебные параграфы
+                if (len(text) > 30 and 
+                    not any(skip in text.lower() for skip in ['cookie', 'реклама', 'підпис', 'фото', 'джерело'])):
+                    meaningful_paragraphs.append(text)
+            
+            # Берем больше контента для AI (до 1500 символов)
+            main_content = '\n'.join(meaningful_paragraphs)
+            if len(main_content) > 1500:
+                sentences = re.split(r'[.!?]+', main_content)
+                trimmed_content = ""
+                for sentence in sentences:
+                    if len(trimmed_content + sentence) < 1500:
+                        trimmed_content += sentence + ". "
+                    else:
+                        break
+                main_content = trimmed_content.strip()
         
-        return '\n'.join(meaningful_paragraphs[:3]) if meaningful_paragraphs else ''
+        print(f"📄 Извлечено {len(main_content)} символов контента")
+        return main_content
     
     def create_summary(self, content, title):
         """Создает краткую выжимку"""
@@ -253,7 +281,9 @@ class FootballUATargetedParser:
             '.article-image img',
             '.news-image img',
             'article img',
-            '.content img:first-of-type'
+            '.content img:first-of-type',
+            '.main-image img',
+            '.post-image img'
         ]
         
         for selector in image_selectors:
@@ -324,10 +354,11 @@ def get_latest_news():
     for article in articles:
         result.append({
             'title': article['title'],
-            'link': article['url'],
+            'link': article['url'],  # main.py ожидает 'link', а не 'url'
+            'url': article['url'],   # добавляем и 'url' для ai_processor
             'summary': article['summary'],
             'image_url': article['image_url'],
-            'content': article['content']
+            'content': article['content']  # ВАЖНО: полный контент для AI
         })
     
     return result
@@ -348,6 +379,7 @@ def test_targeted_parser():
             print(f"\n📰 НОВОСТЬ {i}")
             print(f"📌 Заголовок: {article['title']}")
             print(f"📝 Выжимка: {article['summary'][:100]}...")
+            print(f"📄 Контент: {len(article['content'])} символов")
             if article['image_url']:
                 print(f"🖼️  Изображение: ✅")
                 print(f"    URL: {article['image_url']}")
