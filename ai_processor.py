@@ -3,35 +3,34 @@ import requests
 from typing import Dict, Any
 from urllib.parse import urlparse
 
-client = None
+import google.generativeai as genai
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_AVAILABLE = False
+model = None
 
-def init_gemini_client():
-    """Инициализация клиента Gemini"""
-    global client, GEMINI_AVAILABLE
+
+def init_gemini():
+    """Инициализирует клиента Gemini"""
+    global GEMINI_AVAILABLE, model
+
+    if not GEMINI_API_KEY:
+        print("⚠️  GEMINI_API_KEY не найден - AI функции отключены")
+        return
+
     try:
-        api_key = os.getenv("GEMINI_API_KEY")
-        if not api_key:
-            print("⚠️  GEMINI_API_KEY не найден — AI функции отключены")
-            return False
-
-        import google.generativeai as genai
-        genai.configure(api_key=api_key)
-        client = genai.GenerativeModel("gemini-pro")
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel("models/gemini-pro")
         GEMINI_AVAILABLE = True
-        print("✅ Gemini AI инициализирован")
-        return True
-    except ImportError:
-        print("⚠️  Библиотека google.generativeai не установлена")
-        return False
+        print("✅ Gemini инициализирован")
     except Exception as e:
         print(f"❌ Ошибка инициализации Gemini: {e}")
-        return False
+
 
 def has_gemini_key() -> bool:
-    if client is None:
-        init_gemini_client()
-    return GEMINI_AVAILABLE and bool(os.getenv("GEMINI_API_KEY"))
+    if not GEMINI_AVAILABLE:
+        init_gemini()
+    return GEMINI_AVAILABLE
 
 def create_enhanced_summary(article_data: Dict[str, Any]) -> str:
     """Создание резюме через Gemini"""
