@@ -18,7 +18,7 @@ def init_gemini():
         return
     try:
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel("models/gemini-pro")
+        model = genai.GenerativeModel("gemini-2.5-flash")
         GEMINI_AVAILABLE = True
         print("✅ Gemini инициализирован")
     except Exception as e:
