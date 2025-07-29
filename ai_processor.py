@@ -4,6 +4,7 @@ from typing import Dict, Any
 from urllib.parse import urlparse
 import google.generativeai as genai
 import time
+from bs4 import BeautifulSoup
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_AVAILABLE = False
@@ -28,13 +29,67 @@ def has_gemini_key() -> bool:
         init_gemini()
     return GEMINI_AVAILABLE
 
+def fetch_full_article_content(url: str) -> str:
+    """Загружает полный текст статьи по URL"""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Ищем основной контент статьи (адаптируйте селекторы под структуру football.ua)
+        content_selectors = [
+            '.article-content',
+            '.post-content', 
+            '.entry-content',
+            '[class*="content"]',
+            '.article-body',
+            '.post-body'
+        ]
+        
+        article_text = ""
+        for selector in content_selectors:
+            content_div = soup.select_one(selector)
+            if content_div:
+                # Удаляем ненужные элементы
+                for unwanted in content_div.find_all(['script', 'style', 'iframe', 'ads']):
+                    unwanted.decompose()
+                
+                article_text = content_div.get_text(strip=True)
+                break
+        
+        # Если не нашли специальный контейнер, берем все параграфы
+        if not article_text:
+            paragraphs = soup.find_all('p')
+            article_text = ' '.join([p.get_text(strip=True) for p in paragraphs])
+        
+        # Очищаем текст
+        article_text = ' '.join(article_text.split())  # Убираем лишние пробелы
+        
+        return article_text[:2000]  # Ограничиваем длину для AI
+        
+    except Exception as e:
+        print(f"❌ Ошибка загрузки полного текста статьи: {e}")
+        return ""
+
 def create_enhanced_summary(article_data: Dict[str, Any]) -> str:
     """Создание резюме через Gemini"""
     if not has_gemini_key() or not model:
         return article_data.get('summary', '') or article_data.get('title', '')
 
     title = article_data.get('title', '')
-    content = article_data.get('content', '') or article_data.get('summary', '') or title
+    content = article_data.get('content', '')
+    
+    # Парсер уже загрузил полный контент, используем его
+    if content:
+        print(f"🤖 Обрабатываем {len(content)} символов контента через AI")
+    else:
+        # Если контента нет, используем summary
+        content = article_data.get('summary', '') or title
+        print(f"⚠️ Контент не найден, используем summary: {len(content)} символов")
 
     prompt = f"""Ти редактор футбольних новин.
 Перефразуй і створи інформативний виклад цієї футбольної новини українською мовою.
@@ -73,14 +128,15 @@ def format_for_social_media(article_data: Dict[str, Any]) -> str:
     if has_gemini_key():
         ai_summary = create_enhanced_summary({
             'title': title,
-            'content': content,  # Use full content for AI processing
-            'summary': summary
+            'content': content,
+            'summary': summary,
+            'url': article_data.get('url', '') or article_data.get('link', '')  # Передаем URL для загрузки
         })
     else:
         ai_summary = summary or content[:200] + '...' if len(content) > 200 else content
 
     # Remove unwanted prefixes
-    unwanted_prefixes = ["Інше", "Італія", "Іспанія", "Німеччина", "Чемпіонат", "Сьогодні", "Вчора"]
+    unwanted_prefixes = ["Інше", "Італія", "Іспанія", "Німеччина", "Чемпіонат", "Сьогодні", "Вчера"]
     for prefix in unwanted_prefixes:
         if ai_summary.startswith(prefix):
             ai_summary = ai_summary[len(prefix):].strip(": ").lstrip()
@@ -121,7 +177,7 @@ def process_article_for_posting(article_data: Dict[str, Any]) -> Dict[str, Any]:
         'post_text': post_text,
         'image_path': image_path,
         'image_url': article_data.get('image_url', ''),
-        'url': article_data.get('url', ''),
+        'url': article_data.get('url', '') or article_data.get('link', ''),
         'summary': article_data.get('summary', '')
     }
 
@@ -129,9 +185,6 @@ def process_article_for_posting(article_data: Dict[str, Any]) -> Dict[str, Any]:
 def summarize_news(title: str, url: str, content: str = '') -> str:
     article_data = {'title': title, 'url': url, 'content': content, 'summary': title}
     return create_enhanced_summary(article_data) if has_gemini_key() else f"🔸 {title}"
-
-def simple_summarize(title: str, url: str) -> str:
-    return f"🔸 {title}"
 
 def simple_summarize(title: str, url: str) -> str:
     return f"🔸 {title}"
