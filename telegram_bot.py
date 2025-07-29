@@ -259,6 +259,11 @@ class TelegramPosterSync:
     
     def post_single_article(self, article: Dict[str, Any]) -> bool:
         return post_article(article)
+    
+    # Добавляем недостающий метод post_article
+    def post_article(self, article: Dict[str, Any]) -> bool:
+        """Публикует одну статью - алиас для post_single_article"""
+        return self.post_single_article(article)
 
 if __name__ == "__main__":
     print("🧪 ТЕСТИРОВАНИЕ TELEGRAM БОТА")
