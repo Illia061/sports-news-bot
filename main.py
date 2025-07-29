@@ -5,7 +5,7 @@ import os
 import sys
 from datetime import datetime
 from parser import get_latest_news
-from ai_processor import process_article_for_posting, has_gemini_key as has_openai_key
+from ai_processor import process_article_for_posting, has_gemini_key
 
 
 # Импортируем наш Telegram модуль
@@ -34,7 +34,7 @@ def main():
     print("🔧 Проверка конфигурации...")
     
     # OpenAI
-    if has_openai_key():
+    if has_gemini_key():
         print("✅ OpenAI API ключ найден - используем AI резюме")
     else:
         print("⚠️  OpenAI API ключ не найден - используем базовые резюме")
