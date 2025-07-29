@@ -78,18 +78,46 @@ def fetch_full_article_content(url: str) -> str:
 def create_enhanced_summary(article_data: Dict[str, Any]) -> str:
     """Создание резюме через Gemini"""
     if not has_gemini_key() or not model:
-        return article_data.get('summary', '') or article_data.get('title', '')
+        # Если нет AI, создаем простое резюме из контента
+        content = article_data.get('content', '')
+        summary = article_data.get('summary', '')
+        title = article_data.get('title', '')
+        
+        if content and len(content) > 50:
+            # Берем первые 2-3 предложения из контента
+            sentences = content.split('. ')
+            meaningful_sentences = [s.strip() for s in sentences if len(s.strip()) > 20]
+            if meaningful_sentences:
+                result = '. '.join(meaningful_sentences[:2])
+                if not result.endswith('.'):
+                    result += '.'
+                return result
+        
+        return summary or title
 
     title = article_data.get('title', '')
     content = article_data.get('content', '')
+    summary = article_data.get('summary', '')
+    url = article_data.get('url', '')
     
-    # Парсер уже загрузил полный контент, используем его
-    if content:
-        print(f"🤖 Обрабатываем {len(content)} символов контента через AI")
-    else:
-        # Если контента нет, используем summary
-        content = article_data.get('summary', '') or title
-        print(f"⚠️ Контент не найден, используем summary: {len(content)} символов")
+    # ГЛАВНАЯ ПРОБЛЕМА БЫЛА ЗДЕСЬ: если content пустой, пытаемся загрузить его
+    if not content or len(content) < 100:
+        print(f"🔄 Контент короткий ({len(content)} символов), загружаем полный текст...")
+        if url:
+            full_content = fetch_full_article_content(url)
+            if full_content:
+                content = full_content
+                print(f"✅ Загружен полный контент: {len(content)} символов")
+            else:
+                print("⚠️ Не удалось загрузить полный контент, используем summary")
+                content = summary or title
+    
+    # Проверяем, что у нас есть достаточно контента для обработки
+    if not content or len(content) < 20:
+        print("⚠️ Недостаточно контента для AI обработки")
+        return summary or title
+
+    print(f"🤖 Отправляем в Gemini {len(content)} символов контента")
 
     prompt = f"""Ти редактор футбольних новин.
 Перефразуй і створи інформативний виклад цієї футбольної новини українською мовою.
@@ -110,30 +138,55 @@ def create_enhanced_summary(article_data: Dict[str, Any]) -> str:
 """
     try:
         response = model.generate_content(prompt)
-        summary = response.text.strip()
+        summary_result = response.text.strip()
+        
         # Ensure summary isn't just the title
-        if summary.lower() == title.lower():
+        if summary_result.lower() == title.lower():
+            print("⚠️ AI вернул только заголовок, используем обрезанный контент")
             return content[:200] + '...' if len(content) > 200 else content
-        return summary
+        
+        print(f"✅ AI обработал контент: {len(summary_result)} символов")
+        return summary_result
+        
     except Exception as e:
-        print(f"❌ Помилка Gemini: {e}")
+        print(f"❌ Ошибка Gemini: {e}")
         time.sleep(1)  # Small delay to prevent rate limiting
+        # Возвращаем обрезанный контент как fallback
         return content[:200] + '...' if len(content) > 200 else content
 
 def format_for_social_media(article_data: Dict[str, Any]) -> str:
     title = article_data.get('title', '')
     content = article_data.get('content', '')
     summary = article_data.get('summary', '')
+    url = article_data.get('url', '') or article_data.get('link', '')
+
+    print(f"📝 Форматируем для соцсетей: {title[:50]}...")
+    print(f"   Контент: {len(content)} символов")
+    print(f"   Summary: {len(summary)} символов")
 
     if has_gemini_key():
+        print("🤖 Используем AI для создания резюме...")
         ai_summary = create_enhanced_summary({
             'title': title,
             'content': content,
             'summary': summary,
-            'url': article_data.get('url', '') or article_data.get('link', '')  # Передаем URL для загрузки
+            'url': url
         })
     else:
-        ai_summary = summary or content[:200] + '...' if len(content) > 200 else content
+        print("📝 Используем базовое резюме...")
+        # Улучшенная обработка без AI
+        if content and len(content) > 50:
+            # Берем первые предложения из контента
+            sentences = content.split('. ')
+            meaningful_sentences = [s.strip() for s in sentences if len(s.strip()) > 20]
+            if meaningful_sentences:
+                ai_summary = '. '.join(meaningful_sentences[:2])
+                if not ai_summary.endswith('.'):
+                    ai_summary += '.'
+            else:
+                ai_summary = content[:200] + '...' if len(content) > 200 else content
+        else:
+            ai_summary = summary or content[:200] + '...' if len(content) > 200 else content
 
     # Remove unwanted prefixes
     unwanted_prefixes = ["Інше", "Італія", "Іспанія", "Німеччина", "Чемпіонат", "Сьогодні", "Вчера"]
@@ -146,6 +199,8 @@ def format_for_social_media(article_data: Dict[str, Any]) -> str:
         post += f"{ai_summary}\n\n"
 
     post += "#футбол #новини #спорт"
+    
+    print(f"✅ Готовый пост: {len(post)} символов")
     return post
 
 def download_image(image_url: str, filename: str = None) -> str:
@@ -170,9 +225,12 @@ def download_image(image_url: str, filename: str = None) -> str:
         return ""
 
 def process_article_for_posting(article_data: Dict[str, Any]) -> Dict[str, Any]:
+    print(f"🔄 Обрабатываем статью: {article_data.get('title', '')[:50]}...")
+    
     post_text = format_for_social_media(article_data)
     image_path = download_image(article_data['image_url']) if article_data.get('image_url') else ""
-    return {
+    
+    result = {
         'title': article_data.get('title', ''),
         'post_text': post_text,
         'image_path': image_path,
@@ -180,6 +238,9 @@ def process_article_for_posting(article_data: Dict[str, Any]) -> Dict[str, Any]:
         'url': article_data.get('url', '') or article_data.get('link', ''),
         'summary': article_data.get('summary', '')
     }
+    
+    print(f"✅ Статья обработана успешно")
+    return result
 
 # Old compatible interfaces
 def summarize_news(title: str, url: str, content: str = '') -> str:
@@ -188,4 +249,3 @@ def summarize_news(title: str, url: str, content: str = '') -> str:
 
 def simple_summarize(title: str, url: str) -> str:
     return f"🔸 {title}"
-
