@@ -196,56 +196,51 @@ class TelegramChannelChecker:
         self.channel_id = os.getenv('TELEGRAM_CHANNEL_ID')
     
     def get_recent_posts(self, limit: int = 3) -> List[Dict[str, Any]]:
-        """Получает последние посты из канала"""
-        if not self.bot_token or not self.channel_id:
-            print("❌ Telegram настройки не найдены")
+    if not self.bot_token or not self.channel_id:
+        print("❌ Telegram настройки не найдены")
+        return []
+    
+    try:
+        url = f"https://api.telegram.org/bot{self.bot_token}/getUpdates"
+        params = {
+            'limit': 100,
+            'offset': -100
+        }
+        
+        response = requests.get(url, params=params, timeout=30)
+        result = response.json()
+        print(f"📋 Полный ответ API: {result}")  # Для диагностики
+        
+        if not result.get('ok'):
+            print(f"❌ Ошибка получения обновлений: {result.get('description')}")
             return []
         
-        try:
-            # Используем метод getUpdates для получения сообщений
-            url = f"https://api.telegram.org/bot{self.bot_token}/getUpdates"
-            params = {
-                'limit': 100,
-                'offset': -100
-            }
-            
-            response = requests.get(url, params=params, timeout=15)
-            result = response.json()
-            
-            if not result.get('ok'):
-                print(f"❌ Ошибка получения обновлений: {result.get('description')}")
-                return []
-            
-            # Фильтруем сообщения из нашего канала
-            channel_posts = []
-            for update in result.get('result', []):
-                if 'channel_post' in update:
-                    post = update['channel_post']
-                    if str(post.get('chat', {}).get('id')) == str(self.channel_id):
-                        channel_posts.append(post)
-            
-            # Сортируем по дате и берем последние
-            channel_posts.sort(key=lambda x: x.get('date', 0), reverse=True)
-            recent_posts = channel_posts[:limit]
-            
-            # Преобразуем в удобный формат
-            formatted_posts = []
-            for post in recent_posts:
-                text = post.get('text') or post.get('caption', '')
-                if text and len(text.strip()) > 10:  # Только содержательные посты
-                    formatted_posts.append({
-                        'text': text,
-                        'date': datetime.fromtimestamp(post.get('date', 0)),
-                        'message_id': post.get('message_id')
-                    })
-            
-            print(f"✅ Получено {len(formatted_posts)} последних постов из канала")
-            return formatted_posts
-            
-        except Exception as e:
-            print(f"❌ Ошибка получения постов из канала: {e}")
-            return []
-
+        channel_posts = []
+        for update in result.get('result', []):
+            if 'channel_post' in update:
+                post = update['channel_post']
+                if str(post.get('chat', {}).get('id')) == str(self.channel_id):
+                    channel_posts.append(post)
+        
+        channel_posts.sort(key=lambda x: x.get('date', 0), reverse=True)
+        recent_posts = channel_posts[:limit]
+        
+        formatted_posts = []
+        for post in recent_posts:
+            text = post.get('text') or post.get('caption', '') or ''
+            if text:  # Убрали фильтр на длину для теста
+                formatted_posts.append({
+                    'text': text,
+                    'date': datetime.fromtimestamp(post.get('date', 0)),
+                    'message_id': post.get('message_id')
+                })
+        
+        print(f"✅ Получено {len(formatted_posts)} последних постов из канала")
+        return formatted_posts
+    
+    except Exception as e:
+        print(f"❌ Ошибка получения постов из канала: {e}")
+        return []
 
 def check_content_similarity(new_article: Dict[str, Any], threshold: float = 0.7) -> bool:
     """
