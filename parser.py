@@ -3,6 +3,8 @@ from bs4 import BeautifulSoup
 import re
 from urllib.parse import urljoin
 import time
+from datetime import datetime, timedelta
+from typing import List, Dict, Any, Optional
 
 class FootballUATargetedParser:
     def __init__(self):
@@ -101,8 +103,8 @@ class FootballUATargetedParser:
         print("❌ Блок 'ГОЛОВНЕ ЗА ДОБУ' не найден")
         return None
     
-    def extract_news_from_section(self, section):
-        """Извлекает новости из найденной секции"""
+    def extract_news_from_section(self, section, since_time: Optional[datetime] = None):
+        """Извлекает новости из найденной секции с фильтрацией по времени"""
         if not section:
             return []
         
@@ -137,7 +139,13 @@ class FootballUATargetedParser:
                 unique_news.append(news)
                 seen_urls.add(news['url'])
         
-        return unique_news[:5]  # Возвращаем первые 5
+        # НОВАЯ ЛОГИКА: Если указано время, получаем все новости для фильтрации
+        # Если не указано, возвращаем первые 5 (старое поведение)
+        if since_time:
+            print(f"🕒 Фильтруем новости с {since_time.strftime('%H:%M %d.%m.%Y')}")
+            return unique_news  # Возвращаем все для дальнейшей фильтрации по времени публикации
+        else:
+            return unique_news[:5]  # Старое поведение
     
     def is_news_link(self, href):
         """Проверяет, является ли ссылка новостной"""
@@ -161,22 +169,80 @@ class FootballUATargetedParser:
         
         return any(re.search(pattern, href) for pattern in news_patterns)
     
-    def get_full_article_data(self, news_item):
-        """Получает полные данные статьи"""
+    def estimate_article_publish_time(self, soup, url: str) -> Optional[datetime]:
+        """Пытается определить время публикации статьи"""
+        try:
+            # Ищем мета-теги с датой
+            meta_selectors = [
+                'meta[property="article:published_time"]',
+                'meta[name="publish_date"]',
+                'meta[name="date"]',
+                'meta[property="og:published_time"]'
+            ]
+            
+            for selector in meta_selectors:
+                meta_tag = soup.select_one(selector)
+                if meta_tag:
+                    content = meta_tag.get('content', '')
+                    if content:
+                        try:
+                            # Пытаемся парсить ISO формат
+                            return datetime.fromisoformat(content.replace('Z', '+00:00'))
+                        except:
+                            continue
+            
+            # Ищем дату в тексте страницы
+            date_selectors = [
+                '.article-date',
+                '.publish-date',
+                '.news-date',
+                '.date',
+                '.timestamp',
+                'time[datetime]'
+            ]
+            
+            for selector in date_selectors:
+                date_elem = soup.select_one(selector)
+                if date_elem:
+                    date_text = date_elem.get('datetime') or date_elem.get_text(strip=True)
+                    if date_text:
+                        try:
+                            # Пытаемся парсить различные форматы
+                            if 'T' in date_text:
+                                return datetime.fromisoformat(date_text.replace('Z', '+00:00'))
+                            # Добавьте здесь другие форматы если нужно
+                        except:
+                            continue
+            
+            # Если не нашли точное время, возвращаем текущее время
+            # (предполагаем, что новость свежая)
+            return datetime.now()
+            
+        except Exception as e:
+            print(f"⚠️ Ошибка определения времени публикации: {e}")
+            return datetime.now()
+    
+    def get_full_article_data(self, news_item, since_time: Optional[datetime] = None):
+        """Получает полные данные статьи с проверкой времени"""
         url = news_item['url']
         soup = self.get_page_content(url)
         
         if not soup:
-            return {
-                'title': news_item['title'],
-                'url': url,
-                'content': '',
-                'summary': news_item['title'],
-                'image_url': ''
-            }
+            return None
         
         try:
-            # Извлекаем основной контент (РАСШИРЕННЫЙ для AI)
+            # Определяем время публикации
+            publish_time = self.estimate_article_publish_time(soup, url)
+            
+            # Если указано время фильтрации, проверяем
+            if since_time and publish_time:
+                if publish_time <= since_time:
+                    print(f"⏰ Статья опубликована {publish_time.strftime('%H:%M %d.%m')} - пропускаем (до {since_time.strftime('%H:%M %d.%m')})")
+                    return None
+                else:
+                    print(f"✅ Статья опубликована {publish_time.strftime('%H:%M %d.%m')} - новая!")
+            
+            # Извлекаем основной контент
             content = self.extract_article_content(soup)
             
             # Создаем краткую выжимку
@@ -190,18 +256,13 @@ class FootballUATargetedParser:
                 'url': url,
                 'content': content,
                 'summary': summary,
-                'image_url': image_url
+                'image_url': image_url,
+                'publish_time': publish_time
             }
             
         except Exception as e:
             print(f"❌ Ошибка обработки {url}: {e}")
-            return {
-                'title': news_item['title'],
-                'url': url,
-                'content': '',
-                'summary': news_item['title'],
-                'image_url': ''
-            }
+            return None
     
     def extract_article_content(self, soup):
         """Извлекает основной текст статьи (РАСШИРЕННАЯ ВЕРСИЯ для AI)"""
@@ -304,9 +365,12 @@ class FootballUATargetedParser:
         
         return ''
     
-    def get_latest_news(self):
-        """Основной метод - получает новости из блока 'ГОЛОВНЕ ЗА ДОБУ'"""
+    def get_latest_news(self, since_time: Optional[datetime] = None):
+        """Основной метод - получает новости из блока 'ГОЛОВНЕ ЗА ДОБУ' с фильтрацией по времени"""
         print("🔍 Загружаем главную страницу Football.ua...")
+        
+        if since_time:
+            print(f"🕒 Ищем новости с {since_time.strftime('%H:%M %d.%m.%Y')}")
         
         soup = self.get_page_content(self.base_url)
         if not soup:
@@ -321,7 +385,7 @@ class FootballUATargetedParser:
             return []
         
         print("📰 Извлекаем новости из блока...")
-        news_items = self.extract_news_from_section(golovne_section)
+        news_items = self.extract_news_from_section(golovne_section, since_time)
         
         if not news_items:
             print("❌ Новости в блоке не найдены")
@@ -335,19 +399,23 @@ class FootballUATargetedParser:
         for i, news_item in enumerate(news_items, 1):
             print(f"📖 Обрабатываем новость {i}/{len(news_items)}: {news_item['title'][:50]}...")
             
-            article_data = self.get_full_article_data(news_item)
-            full_articles.append(article_data)
+            article_data = self.get_full_article_data(news_item, since_time)
+            
+            # Если статья подходит по времени, добавляем её
+            if article_data:
+                full_articles.append(article_data)
             
             # Небольшая пауза между запросами
             time.sleep(1)
         
+        print(f"✅ Обработано {len(full_articles)} новых статей")
         return full_articles
 
 # Функция для совместимости с существующим кодом
-def get_latest_news():
+def get_latest_news(since_time: Optional[datetime] = None):
     """Функция-обертка для совместимости"""
     parser = FootballUATargetedParser()
-    articles = parser.get_latest_news()
+    articles = parser.get_latest_news(since_time)
     
     # Конвертируем в формат, ожидаемый основным кодом
     result = []
@@ -358,7 +426,8 @@ def get_latest_news():
             'url': article['url'],   # добавляем и 'url' для ai_processor
             'summary': article['summary'],
             'image_url': article['image_url'],
-            'content': article['content']  # ВАЖНО: полный контент для AI
+            'content': article['content'],  # ВАЖНО: полный контент для AI
+            'publish_time': article.get('publish_time')  # НОВОЕ: время публикации
         })
     
     return result
@@ -368,31 +437,28 @@ def test_targeted_parser():
     print("🎯 ТЕСТИРУЕМ ПАРСЕР ДЛЯ БЛОКА 'ГОЛОВНЕ ЗА ДОБУ'")
     print("=" * 60)
     
+    # Тест 1: Получение всех новостей (старое поведение)
+    print("\n📋 Тест 1: Получение всех новостей")
     parser = FootballUATargetedParser()
     articles = parser.get_latest_news()
     
     if articles:
-        print(f"\n✅ УСПЕШНО! Найдено {len(articles)} новостей из блока 'ГОЛОВНЕ ЗА ДОБУ':")
-        print("=" * 60)
-        
+        print(f"✅ Найдено {len(articles)} новостей")
         for i, article in enumerate(articles, 1):
-            print(f"\n📰 НОВОСТЬ {i}")
-            print(f"📌 Заголовок: {article['title']}")
-            print(f"📝 Выжимка: {article['summary'][:100]}...")
-            print(f"📄 Контент: {len(article['content'])} символов")
-            if article['image_url']:
-                print(f"🖼️  Изображение: ✅")
-                print(f"    URL: {article['image_url']}")
-            else:
-                print(f"🖼️  Изображение: ❌")
-            print(f"🔗 Ссылка: {article['url']}")
-            print("-" * 60)
+            print(f"   📰 {i}. {article['title'][:50]}...")
+    
+    # Тест 2: Получение новостей с фильтрацией по времени
+    print(f"\n📋 Тест 2: Получение новостей за последние 30 минут")
+    since_time = datetime.now() - timedelta(minutes=30)
+    recent_articles = parser.get_latest_news(since_time)
+    
+    if recent_articles:
+        print(f"✅ Найдено {len(recent_articles)} новых новостей")
+        for i, article in enumerate(recent_articles, 1):
+            publish_time = article.get('publish_time', datetime.now())
+            print(f"   📰 {i}. {article['title'][:50]}... ({publish_time.strftime('%H:%M')})")
     else:
-        print("❌ Новости из блока 'ГОЛОВНЕ ЗА ДОБУ' не найдены")
-        print("Возможные причины:")
-        print("- Изменилась структура сайта")
-        print("- Блок находится в другом месте")
-        print("- Проблемы с подключением")
+        print("📭 Новых новостей за последние 30 минут не найдено")
 
 if __name__ == "__main__":
     test_targeted_parser()
