@@ -6,7 +6,8 @@ import sys
 from datetime import datetime
 from parser import get_latest_news
 from ai_processor import process_article_for_posting, has_gemini_key
-from ai_content_checker import check_content_similarity  # ДОБАВЛЕНО!
+from ai_content_checker import check_content_similarity
+from db import get_last_run_time, update_last_run_time, is_already_posted, save_posted, cleanup_old_posts, debug_db_state
 import asyncio
 
 # Импортируем наш Telegram модуль
@@ -47,10 +48,29 @@ async def main():
         
     print("=" * 70)
     
-    # Проверяем настройки
-    print("🔧 Проверка конфигурации...")
+    # НОВАЯ ЛОГИКА: Получаем время последнего запуска
+    print("🕒 Определяем время последнего запуска...")
+    last_run_time = get_last_run_time()
+    current_time = datetime.now()
     
-    # OpenAI
+    print(f"📊 Последний запуск: {last_run_time.strftime('%H:%M %d.%m.%Y')}")
+    print(f"📊 Текущее время: {current_time.strftime('%H:%M %d.%m.%Y')}")
+    print(f"⏱️  Интервал: {(current_time - last_run_time).total_seconds() / 60:.1f} минут")
+    
+    # Отладка состояния БД
+    debug_db_state()
+    
+    # Обновляем время запуска в начале (но сохраняем старое для фильтрации)
+    filter_time = last_run_time
+    update_last_run_time()
+    
+    # Очищаем старые записи
+    cleanup_old_posts(days=7)
+    
+    # Проверяем настройки
+    print("\n🔧 Проверка конфигурации...")
+    
+    # Gemini
     if has_gemini_key():
         print("✅ Gemini API ключ найден - используем AI резюме и проверку дубликатов")
     else:
@@ -66,22 +86,41 @@ async def main():
     
     print("-" * 70)
     
-    # Получаем новости
-    print("\n🔍 Получаем новости из блока 'ГОЛОВНЕ ЗА ДОБУ'...")
-    news_list = get_latest_news()
+    # НОВАЯ ЛОГИКА: Получаем только новости с момента последнего запуска
+    print(f"\n🔍 Получаем новости с {filter_time.strftime('%H:%M %d.%m.%Y')}...")
+    news_list = get_latest_news(since_time=filter_time)
     
     if not news_list:
-        print("❌ Новости не найдены. Проверьте соединение или структуру сайта.")
+        print("📭 Новых новостей с момента последнего запуска не найдено.")
+        print(f"💡 Проверим снова через 20 минут (следующий запуск)")
         return
     
-    print(f"✅ Найдено {len(news_list)} новостей для обработки")
+    print(f"✅ Найдено {len(news_list)} новых новостей для обработки")
+    
+    # Дополнительная фильтрация: убираем уже опубликованные
+    print("\n🔍 Фильтруем уже опубликованные новости...")
+    filtered_news = []
+    
+    for article in news_list:
+        title = article.get('title', '')
+        if not is_already_posted(title):
+            filtered_news.append(article)
+            print(f"✅ Новая: {title[:60]}...")
+        else:
+            print(f"🚫 Уже опубликована: {title[:60]}...")
+    
+    if not filtered_news:
+        print("📭 Все найденные новости уже были опубликованы.")
+        return
+    
+    print(f"✅ К обработке: {len(filtered_news)} уникальных новостей")
     
     # Обрабатываем каждую новость
     print("\n📝 Обработка новостей...")
     processed_articles = []
     
-    for i, article in enumerate(news_list, 1):
-        print(f"\n📖 Обрабатываем новость {i}/{len(news_list)}:")
+    for i, article in enumerate(filtered_news, 1):
+        print(f"\n📖 Обрабатываем новость {i}/{len(filtered_news)}:")
         print(f"   {article.get('title', '')[:60]}...")
         
         try:
@@ -103,7 +142,7 @@ async def main():
     
     # Показываем обработанные новости
     print("\n" + "=" * 70)
-    print("📰 ОБРАБОТАННЫЕ НОВОСТИ")
+    print("📰 ОБРАБОТАННЫЕ НОВЫЕ НОВОСТИ")
     print("=" * 70)
     
     for i, article in enumerate(processed_articles, 1):
@@ -121,27 +160,26 @@ async def main():
         
         print("=" * 50)
     
-    # НОВАЯ ЛОГИКА: Фильтрация дубликатов перед публикацией
+    # ИЗМЕНЕННАЯ ЛОГИКА: Проверяем все новые статьи на дубликаты и публикуем их
     if telegram_enabled and processed_articles:
-        print(f"\n🔍 ПРОВЕРКА НА ДУБЛИКАТЫ")
+        print(f"\n🔍 ПРОВЕРКА НА ДУБЛИКАТЫ И ПУБЛИКАЦИЯ")
         print("=" * 70)
         
         articles_to_publish = []
         
-        # Берем только ПЕРВУЮ новость для публикации (как указано в требовании)
-        if processed_articles:
-            latest_article = processed_articles[0]
-            print(f"📊 Проверяем последнюю новость на дубликаты...")
-            print(f"   📰 {latest_article.get('title', '')[:60]}...")
+        # Проверяем каждую новую новость на дубликаты
+        for i, article in enumerate(processed_articles, 1):
+            print(f"\n📊 Проверяем новость {i}/{len(processed_articles)} на дубликаты...")
+            print(f"   📰 {article.get('title', '')[:60]}...")
             
             # Проверяем на дубликаты
-            is_duplicate = check_content_similarity(latest_article, threshold=0.7)
+            is_duplicate = check_content_similarity(article, threshold=0.7)
             
             if is_duplicate:
-                print(f"🚫 ДУБЛИКАТ ОБНАРУЖЕН - пропускаем публикацию")
+                print(f"🚫 ДУБЛІКАТ ОБНАРУЖЕН - пропускаем публикацию")
             else:
                 print(f"✅ УНИКАЛЬНЫЙ КОНТЕНТ - добавляем к публикации")
-                articles_to_publish.append(latest_article)
+                articles_to_publish.append(article)
         
         # Публикация в Telegram
         if articles_to_publish:
@@ -162,10 +200,16 @@ async def main():
                         if await post_with_timeout(poster, article):
                             successful_posts += 1
                             print(f"✅ Успешно опубликовано")
+                            
+                            # Сохраняем информацию об опубликованной новости
+                            title = article.get('title', '')
+                            if title:
+                                save_posted(title)
+                                print(f"💾 Сохранена запись о публикации: {title[:50]}...")
                         else:
                             print(f"❌ Не удалось опубликовать")
                         
-                        # Задержка между постами только если их больше 1
+                        # Задержка между постами
                         if i < len(articles_to_publish):
                             await asyncio.sleep(3)
                     
@@ -184,7 +228,7 @@ async def main():
                 traceback.print_exc()
         else:
             print(f"\n🚫 НЕТ НОВОСТЕЙ ДЛЯ ПУБЛИКАЦИИ")
-            print("📋 Все новости оказались дубликатами последних постов в канале")
+            print("📋 Все новые новости оказались дубликатами последних постов в канале")
     
     elif not telegram_enabled:
         print(f"\n📢 ПУБЛИКАЦИЯ В TELEGRAM ОТКЛЮЧЕНА")
@@ -200,8 +244,10 @@ async def main():
         import json
         output_data = {
             'timestamp': datetime.now().isoformat(),
-            'total_articles': len(processed_articles),
-            'articles_to_publish': len(articles_to_publish) if telegram_enabled else 0,
+            'last_run_time': filter_time.isoformat(),
+            'total_new_articles': len(filtered_news),
+            'total_processed': len(processed_articles),
+            'articles_to_publish': len(articles_to_publish) if telegram_enabled and 'articles_to_publish' in locals() else 0,
             'telegram_enabled': telegram_enabled,
             'articles': processed_articles
         }
@@ -213,8 +259,11 @@ async def main():
     
     # Статистика
     print(f"\n📊 ФИНАЛЬНАЯ СТАТИСТИКА:")
-    print(f"   📰 Обработано новостей: {len(processed_articles)}")
-    print(f"   🔍 Проверено на дубликаты: {'Да' if telegram_enabled else 'Нет'}")
+    print(f"   🕒 Фильтр времени: с {filter_time.strftime('%H:%M %d.%m')}")
+    print(f"   📰 Найдено новых: {len(news_list)}")
+    print(f"   🔍 После фильтрации дубликатов БД: {len(filtered_news)}")
+    print(f"   📝 Обработано: {len(processed_articles)}")
+    print(f"   🔍 Проверено на дубликаты контента: {'Да' if telegram_enabled else 'Нет'}")
     print(f"   📢 К публикации: {len(articles_to_publish) if telegram_enabled and 'articles_to_publish' in locals() else 'Неизвестно'}")
     print(f"   🖼️ С изображениями: {sum(1 for a in processed_articles if a.get('image_path') or a.get('image_url'))}")
     print(f"   🤖 С AI резюме: {'Да' if has_gemini_key() else 'Нет'}")
