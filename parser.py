@@ -5,6 +5,9 @@ from urllib.parse import urljoin
 import time
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
+from zoneinfo import ZoneInfo
+
+KIEV_TZ = ZoneInfo("Europe/Kiev")
 
 class FootballUATargetedParser:
     def __init__(self):
@@ -196,7 +199,7 @@ class FootballUATargetedParser:
                 
                 if month_name in ukrainian_months:
                     month = ukrainian_months[month_name]
-                    return datetime(year, month, day, hour, minute)
+                    return datetime(year, month, day, hour, minute, tzinfo=KIEV_TZ)
             
             # Паттерн: "02.08.2025, 10:48"
             pattern2 = r'(\d{1,2})\.(\d{1,2})\.(\d{4})[\s,]+(\d{1,2}):(\d{2})'
@@ -208,7 +211,7 @@ class FootballUATargetedParser:
                 year = int(match2.group(3))
                 hour = int(match2.group(4))
                 minute = int(match2.group(5))
-                return datetime(year, month, day, hour, minute)
+                return datetime(year, month, day, hour, minute, tzinfo=KIEV_TZ)
             
             # Паттерн: "10:48" (только время, берем сегодняшнюю дату)
             pattern3 = r'^(\d{1,2}):(\d{2})$'
@@ -217,7 +220,7 @@ class FootballUATargetedParser:
             if match3:
                 hour = int(match3.group(1))
                 minute = int(match3.group(2))
-                today = datetime.now().replace(hour=hour, minute=minute, second=0, microsecond=0)
+                today = datetime.now(KIEV_TZ).replace(hour=hour, minute=minute, second=0, microsecond=0)
                 return today
             
         except Exception as e:
@@ -250,8 +253,10 @@ class FootballUATargetedParser:
                             # Пытаемся парсить ISO формат
                             if 'T' in content:
                                 parsed_date = datetime.fromisoformat(content.replace('Z', '+00:00').replace('+00:00', ''))
-                                print(f"✅ Успешно спарсен мета-тег: {parsed_date}")
-                                return parsed_date
+                                # Преобразуем в киевское время
+                                parsed_date_kiev = parsed_date.astimezone(KIEV_TZ)
+                                print(f"✅ Успешно спарсен мета-тег: {parsed_date_kiev}")
+                                return parsed_date_kiev
                         except Exception as e:
                             print(f"⚠️ Не удалось спарсить мета-тег: {e}")
                             continue
@@ -280,8 +285,10 @@ class FootballUATargetedParser:
                         print(f"📅 Найден datetime атрибут: {datetime_attr}")
                         try:
                             parsed_date = datetime.fromisoformat(datetime_attr.replace('Z', '+00:00').replace('+00:00', ''))
-                            print(f"✅ Успешно спарсен datetime: {parsed_date}")
-                            return parsed_date
+                            # Преобразуем в киевское время
+                            parsed_date_kiev = parsed_date.astimezone(KIEV_TZ)
+                            print(f"✅ Успешно спарсен datetime: {parsed_date_kiev}")
+                            return parsed_date_kiev
                         except Exception as e:
                             print(f"⚠️ Не удалось спарсить datetime: {e}")
                     
@@ -313,7 +320,7 @@ class FootballUATargetedParser:
                                 parsed_date = self.parse_ukrainian_date(' '.join(match))
                             else:  # числовой формат
                                 day, month, year, hour, minute = map(int, match)
-                                parsed_date = datetime(year, month, day, hour, minute)
+                                parsed_date = datetime(year, month, day, hour, minute, tzinfo=KIEV_TZ)
                             
                             if parsed_date:
                                 print(f"✅ Найдена дата в тексте: {parsed_date}")
@@ -323,7 +330,6 @@ class FootballUATargetedParser:
                             continue
             
             # ВАЖНО: Если не нашли точное время, НЕ возвращаем текущее время!
-            # Вместо этого возвращаем None, чтобы статья прошла проверку
             print(f"⚠️ Не удалось определить точное время публикации")
             return None
             
@@ -563,7 +569,7 @@ def test_targeted_parser():
     
     # Тест 2: Получение новостей с фильтрацией по времени
     print(f"\n📋 Тест 2: Получение новостей за последние 30 минут")
-    since_time = datetime.now() - timedelta(minutes=30)
+    since_time = datetime.now(KIEV_TZ) - timedelta(minutes=30)
     recent_articles = parser.get_latest_news(since_time)
     
     if recent_articles:
