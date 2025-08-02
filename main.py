@@ -4,10 +4,11 @@
 import os
 import sys
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from parser import get_latest_news
 from ai_processor import process_article_for_posting, has_gemini_key
 from ai_content_checker import check_content_similarity
-from db import get_last_run_time, update_last_run_time, is_already_posted, save_posted, cleanup_old_posts, debug_db_state
+from db import get_last_run_time, update_last_run_time, is_already_posted, save_posted, cleanup_old_posts, debug_db_state, now_kiev, format_kiev_time, to_kiev_time
 import asyncio
 
 # Импортируем наш Telegram модуль
@@ -17,6 +18,9 @@ try:
 except ImportError:
     print("⚠️ telegram_bot.py не найден")
     TELEGRAM_AVAILABLE = False
+
+# Киевское время
+KIEV_TZ = ZoneInfo("Europe/Kiev")
 
 def check_telegram_config():
     """Проверяет настройки Telegram"""
@@ -41,28 +45,33 @@ async def post_with_timeout(poster, article, timeout=30):
 async def main():
     print("🚀 Запуск бота парсинга и публикации новостей Football.ua")
     
-    current_hour = datetime.now().hour
+    # ВАЖНО: Проверяем рабочие часы по киевскому времени
+    current_time_kiev = now_kiev()
+    current_hour = current_time_kiev.hour
+    
     if not (6 <= current_hour or current_hour <= 1):  # с 06:00 до 01:00
-        print(f"⏰ Сейчас {current_hour}:00 — вне времени работы. Бот завершает работу.")
+        print(f"⏰ Сейчас {current_hour}:00 по Киеву — вне времени работы. Бот завершает работу.")
         return
         
     print("=" * 70)
     
-    # НОВАЯ ЛОГИКА: Получаем время последнего запуска
+    # ИСПРАВЛЕНА ЛОГИКА: Получаем время последнего запуска в киевском времени
     print("🕒 Определяем время последнего запуска...")
-    last_run_time = get_last_run_time()
-    current_time = datetime.now()
+    last_run_time = get_last_run_time()  # Уже возвращает киевское время
     
-    print(f"📊 Последний запуск: {last_run_time.strftime('%H:%M %d.%m.%Y')}")
-    print(f"📊 Текущее время: {current_time.strftime('%H:%M %d.%m.%Y')}")
-    print(f"⏱️  Интервал: {(current_time - last_run_time).total_seconds() / 60:.1f} минут")
+    print(f"📊 Последний запуск: {format_kiev_time(last_run_time)} (Киев)")
+    print(f"📊 Текущее время: {format_kiev_time(current_time_kiev)} (Киев)")
+    
+    # Вычисляем разницу
+    time_diff = current_time_kiev - to_kiev_time(last_run_time)
+    print(f"⏱️  Интервал: {time_diff.total_seconds() / 60:.1f} минут")
     
     # Отладка состояния БД
     debug_db_state()
     
     # Обновляем время запуска в начале (но сохраняем старое для фильтрации)
     filter_time = last_run_time
-    update_last_run_time()
+    update_last_run_time()  # Теперь сохраняет в киевском времени
     
     # Очищаем старые записи
     cleanup_old_posts(days=7)
@@ -86,8 +95,8 @@ async def main():
     
     print("-" * 70)
     
-    # НОВАЯ ЛОГИКА: Получаем только новости с момента последнего запуска
-    print(f"\n🔍 Получаем новости с {filter_time.strftime('%H:%M %d.%m.%Y')}...")
+    # ИСПРАВЛЕНА ЛОГИКА: Получаем только новости с момента последнего запуска (в киевском времени)
+    print(f"\n🔍 Получаем новости с {format_kiev_time(filter_time)} (Киев)...")
     news_list = get_latest_news(since_time=filter_time)
     
     if not news_list:
@@ -105,7 +114,9 @@ async def main():
         title = article.get('title', '')
         if not is_already_posted(title):
             filtered_news.append(article)
-            print(f"✅ Новая: {title[:60]}...")
+            publish_time = article.get('publish_time')
+            time_str = format_kiev_time(publish_time) if publish_time else 'время неизвестно'
+            print(f"✅ Новая: {title[:60]}... ({time_str})")
         else:
             print(f"🚫 Уже опубликована: {title[:60]}...")
     
@@ -121,7 +132,9 @@ async def main():
     
     for i, article in enumerate(filtered_news, 1):
         print(f"\n📖 Обрабатываем новость {i}/{len(filtered_news)}:")
-        print(f"   {article.get('title', '')[:60]}...")
+        publish_time = article.get('publish_time')
+        time_str = format_kiev_time(publish_time) if publish_time else 'время неизвестно'
+        print(f"   {article.get('title', '')[:60]}... ({time_str})")
         
         try:
             processed_article = process_article_for_posting(article)
@@ -201,11 +214,10 @@ async def main():
                             successful_posts += 1
                             print(f"✅ Успешно опубликовано")
                             
-                            # Сохраняем информацию об опубликованной новости
+                            # Сохраняем информацию об опубликованной новости (с киевским временем)
                             title = article.get('title', '')
                             if title:
-                                save_posted(title)
-                                print(f"💾 Сохранена запись о публикации: {title[:50]}...")
+                                save_posted(title)  # Теперь сохраняет в киевском времени
                         else:
                             print(f"❌ Не удалось опубликовать")
                         
@@ -243,8 +255,9 @@ async def main():
     try:
         import json
         output_data = {
-            'timestamp': datetime.now().isoformat(),
-            'last_run_time': filter_time.isoformat(),
+            'timestamp': current_time_kiev.isoformat(),
+            'last_run_time': filter_time.isoformat() if filter_time else None,
+            'timezone': 'Europe/Kiev',
             'total_new_articles': len(filtered_news),
             'total_processed': len(processed_articles),
             'articles_to_publish': len(articles_to_publish) if telegram_enabled and 'articles_to_publish' in locals() else 0,
@@ -259,7 +272,7 @@ async def main():
     
     # Статистика
     print(f"\n📊 ФИНАЛЬНАЯ СТАТИСТИКА:")
-    print(f"   🕒 Фильтр времени: с {filter_time.strftime('%H:%M %d.%m')}")
+    print(f"   🕒 Фильтр времени: с {format_kiev_time(filter_time)} (Киев)")
     print(f"   📰 Найдено новых: {len(news_list)}")
     print(f"   🔍 После фильтрации дубликатов БД: {len(filtered_news)}")
     print(f"   📝 Обработано: {len(processed_articles)}")
@@ -268,6 +281,7 @@ async def main():
     print(f"   🖼️ С изображениями: {sum(1 for a in processed_articles if a.get('image_path') or a.get('image_url'))}")
     print(f"   🤖 С AI резюме: {'Да' if has_gemini_key() else 'Нет'}")
     print(f"   📢 Telegram публикация: {'Включена' if telegram_enabled else 'Отключена'}")
+    print(f"   ⏰ Время выполнения: {format_kiev_time(current_time_kiev)} (Киев)")
     
     print(f"\n✅ Работа завершена!")
 
