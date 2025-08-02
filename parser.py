@@ -519,6 +519,11 @@ class FootballUATargetedParser:
             
             article_data = self.get_full_article_data(news_item, since_time)
             
+            # Если статья не подходит по времени, прекращаем обработку
+            if since_time and article_data is None:
+                print(f"🛑 Обнаружена старая новость, прекращаем обработку остальных новостей")
+                break
+            
             # Если статья подходит по времени, добавляем её
             if article_data:
                 full_articles.append(article_data)
