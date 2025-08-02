@@ -162,7 +162,7 @@ class AIContentSimilarityChecker:
             return {"ai_available": False, "error": str(e), "similarities": [], "is_duplicate": False}
     
     def fallback_similarity_check(self, text1: str, text2: str) -> float:
-        """Резервна проверка похожести без AI"""
+        """Резервная проверка похожести без AI"""
         if not text1 or not text2:
             return 0.0
         
@@ -195,7 +195,8 @@ class TelegramChannelChecker:
         self.bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
         self.channel_id = os.getenv('TELEGRAM_CHANNEL_ID')
     
-    def get_recent_posts(self, limit: int = 3) -> List[Dict[str, Any]]:
+    def get_recent_posts(self, limit: int = 5) -> List[Dict[str, Any]]:
+        """Получает последние посты из канала (увеличиваем лимит для новой логики)"""
         if not self.bot_token or not self.channel_id:
             print("❌ Telegram настройки не найдены")
             return []
@@ -262,8 +263,8 @@ def check_content_similarity(new_article: Dict[str, Any], threshold: float = 0.7
         print("⚠️ Новая статья не содержит текста")
         return False
     
-    # Получаем последние посты из канала
-    recent_posts = channel_checker.get_recent_posts(limit=3)
+    # Получаем последние посты из канала (больше постов для сравнения)
+    recent_posts = channel_checker.get_recent_posts(limit=5)
     
     if not recent_posts:
         print("✅ Не удалось получить недавние посты - публикуем")
@@ -398,7 +399,7 @@ def test_ai_similarity_checker():
     print("-" * 50)
     
     channel_checker = TelegramChannelChecker()
-    recent_posts = channel_checker.get_recent_posts(3)
+    recent_posts = channel_checker.get_recent_posts(5)
     
     if recent_posts:
         print(f"✅ Отримано {len(recent_posts)} постів:")
