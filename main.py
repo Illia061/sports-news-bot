@@ -39,6 +39,12 @@ async def post_with_timeout(poster, article, timeout=30):
 
 async def main():
     print("🚀 Запуск бота парсинга и публикации новостей Football.ua")
+    
+    current_hour = datetime.now().hour
+    if not (6 <= current_hour or current_hour <= 1):  # с 06:00 до 01:00
+        print(f"⏰ Сейчас {current_hour}:00 — вне времени работы. Бот завершает работу.")
+        return
+        
     print("=" * 70)
     
     # Проверяем настройки
