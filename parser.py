@@ -169,15 +169,75 @@ class FootballUATargetedParser:
         
         return any(re.search(pattern, href) for pattern in news_patterns)
     
+    def parse_ukrainian_date(self, date_text: str) -> Optional[datetime]:
+        """Парсит украинский формат даты"""
+        try:
+            # Словарь украинских месяцев
+            ukrainian_months = {
+                'січня': 1, 'лютого': 2, 'березня': 3, 'квітня': 4, 'травня': 5, 'червня': 6,
+                'липня': 7, 'серпня': 8, 'вересня': 9, 'жовтня': 10, 'листопада': 11, 'грудня': 12,
+                'січ': 1, 'лют': 2, 'бер': 3, 'кві': 4, 'тра': 5, 'чер': 6,
+                'лип': 7, 'сер': 8, 'вер': 9, 'жов': 10, 'лис': 11, 'гру': 12
+            }
+            
+            # Очищаем текст
+            cleaned_text = re.sub(r'[,.]', '', date_text.lower().strip())
+            
+            # Паттерн: "02 серпня 2025, 10:48"
+            pattern1 = r'(\d{1,2})\s+(\w+)\s+(\d{4})[\s,]+(\d{1,2}):(\d{2})'
+            match1 = re.search(pattern1, cleaned_text)
+            
+            if match1:
+                day = int(match1.group(1))
+                month_name = match1.group(2)
+                year = int(match1.group(3))
+                hour = int(match1.group(4))
+                minute = int(match1.group(5))
+                
+                if month_name in ukrainian_months:
+                    month = ukrainian_months[month_name]
+                    return datetime(year, month, day, hour, minute)
+            
+            # Паттерн: "02.08.2025, 10:48"
+            pattern2 = r'(\d{1,2})\.(\d{1,2})\.(\d{4})[\s,]+(\d{1,2}):(\d{2})'
+            match2 = re.search(pattern2, cleaned_text)
+            
+            if match2:
+                day = int(match2.group(1))
+                month = int(match2.group(2))
+                year = int(match2.group(3))
+                hour = int(match2.group(4))
+                minute = int(match2.group(5))
+                return datetime(year, month, day, hour, minute)
+            
+            # Паттерн: "10:48" (только время, берем сегодняшнюю дату)
+            pattern3 = r'^(\d{1,2}):(\d{2})$'
+            match3 = re.search(pattern3, cleaned_text)
+            
+            if match3:
+                hour = int(match3.group(1))
+                minute = int(match3.group(2))
+                today = datetime.now().replace(hour=hour, minute=minute, second=0, microsecond=0)
+                return today
+            
+        except Exception as e:
+            print(f"⚠️ Ошибка парсинга украинской даты '{date_text}': {e}")
+        
+        return None
+    
     def estimate_article_publish_time(self, soup, url: str) -> Optional[datetime]:
         """Пытается определить время публикации статьи"""
         try:
+            print(f"🕒 Определяем время публикации для: {url}")
+            
             # Ищем мета-теги с датой
             meta_selectors = [
                 'meta[property="article:published_time"]',
                 'meta[name="publish_date"]',
                 'meta[name="date"]',
-                'meta[property="og:published_time"]'
+                'meta[property="og:published_time"]',
+                'meta[name="DC.date"]',
+                'meta[itemprop="datePublished"]'
             ]
             
             for selector in meta_selectors:
@@ -185,42 +245,91 @@ class FootballUATargetedParser:
                 if meta_tag:
                     content = meta_tag.get('content', '')
                     if content:
+                        print(f"📅 Найден мета-тег {selector}: {content}")
                         try:
                             # Пытаемся парсить ISO формат
-                            return datetime.fromisoformat(content.replace('Z', '+00:00'))
-                        except:
+                            if 'T' in content:
+                                parsed_date = datetime.fromisoformat(content.replace('Z', '+00:00').replace('+00:00', ''))
+                                print(f"✅ Успешно спарсен мета-тег: {parsed_date}")
+                                return parsed_date
+                        except Exception as e:
+                            print(f"⚠️ Не удалось спарсить мета-тег: {e}")
                             continue
             
             # Ищем дату в тексте страницы
             date_selectors = [
                 '.article-date',
-                '.publish-date',
+                '.publish-date', 
                 '.news-date',
                 '.date',
                 '.timestamp',
-                'time[datetime]'
+                'time[datetime]',
+                '.article-time',
+                '.post-date',
+                '.entry-date',
+                '[class*="date"]',
+                '[class*="time"]'
             ]
             
             for selector in date_selectors:
                 date_elem = soup.select_one(selector)
                 if date_elem:
-                    date_text = date_elem.get('datetime') or date_elem.get_text(strip=True)
-                    if date_text:
+                    # Пытаемся получить datetime атрибут
+                    datetime_attr = date_elem.get('datetime')
+                    if datetime_attr:
+                        print(f"📅 Найден datetime атрибут: {datetime_attr}")
                         try:
-                            # Пытаемся парсить различные форматы
-                            if 'T' in date_text:
-                                return datetime.fromisoformat(date_text.replace('Z', '+00:00'))
-                            # Добавьте здесь другие форматы если нужно
-                        except:
+                            parsed_date = datetime.fromisoformat(datetime_attr.replace('Z', '+00:00').replace('+00:00', ''))
+                            print(f"✅ Успешно спарсен datetime: {parsed_date}")
+                            return parsed_date
+                        except Exception as e:
+                            print(f"⚠️ Не удалось спарсить datetime: {e}")
+                    
+                    # Пытаемся получить текст даты
+                    date_text = date_elem.get_text(strip=True)
+                    if date_text:
+                        print(f"📅 Найден текст даты в {selector}: '{date_text}'")
+                        parsed_date = self.parse_ukrainian_date(date_text)
+                        if parsed_date:
+                            print(f"✅ Успешно спарсен текст даты: {parsed_date}")
+                            return parsed_date
+            
+            # Ищем дату в заголовке страницы или в основном контенте
+            all_text = soup.get_text()
+            
+            # Паттерны для поиска даты в тексте
+            date_patterns = [
+                r'(\d{1,2})\s+(січня|лютого|березня|квітня|травня|червня|липня|серпня|вересня|жовтня|листопада|грудня)\s+(\d{4})[\s,]+(\d{1,2}):(\d{2})',
+                r'(\d{1,2})\.(\d{1,2})\.(\d{4})[\s,]+(\d{1,2}):(\d{2})',
+                r'(\d{1,2})/(\d{1,2})/(\d{4})[\s,]+(\d{1,2}):(\d{2})'
+            ]
+            
+            for pattern in date_patterns:
+                matches = re.findall(pattern, all_text, re.IGNORECASE)
+                for match in matches[:3]:  # Проверяем только первые 3 совпадения
+                    if len(match) >= 5:
+                        try:
+                            if 'січня' in pattern or 'лютого' in pattern:  # украинский формат
+                                parsed_date = self.parse_ukrainian_date(' '.join(match))
+                            else:  # числовой формат
+                                day, month, year, hour, minute = map(int, match)
+                                parsed_date = datetime(year, month, day, hour, minute)
+                            
+                            if parsed_date:
+                                print(f"✅ Найдена дата в тексте: {parsed_date}")
+                                return parsed_date
+                        except Exception as e:
+                            print(f"⚠️ Ошибка парсинга найденной даты: {e}")
                             continue
             
-            # Если не нашли точное время, возвращаем текущее время
-            # (предполагаем, что новость свежая)
-            return datetime.now()
+            # ВАЖНО: Если не нашли точное время, НЕ возвращаем текущее время!
+            # Вместо этого возвращаем None, чтобы статья прошла проверку
+            print(f"⚠️ Не удалось определить точное время публикации")
+            return None
             
         except Exception as e:
             print(f"⚠️ Ошибка определения времени публикации: {e}")
-            return datetime.now()
+            return None
     
     def get_full_article_data(self, news_item, since_time: Optional[datetime] = None):
         """Получает полные данные статьи с проверкой времени"""
@@ -234,13 +343,16 @@ class FootballUATargetedParser:
             # Определяем время публикации
             publish_time = self.estimate_article_publish_time(soup, url)
             
-            # Если указано время фильтрации, проверяем
+            # ИЗМЕНЕНА ЛОГИКА: Если указано время фильтрации, проверяем только при наличии точного времени
             if since_time and publish_time:
                 if publish_time <= since_time:
                     print(f"⏰ Статья опубликована {publish_time.strftime('%H:%M %d.%m')} - пропускаем (до {since_time.strftime('%H:%M %d.%m')})")
                     return None
                 else:
                     print(f"✅ Статья опубликована {publish_time.strftime('%H:%M %d.%m')} - новая!")
+            elif since_time and not publish_time:
+                # Если не смогли определить точное время, считаем статью новой
+                print(f"⚠️ Время публикации не определено - считаем статью новой")
             
             # Извлекаем основной контент
             content = self.extract_article_content(soup)
@@ -445,7 +557,9 @@ def test_targeted_parser():
     if articles:
         print(f"✅ Найдено {len(articles)} новостей")
         for i, article in enumerate(articles, 1):
-            print(f"   📰 {i}. {article['title'][:50]}...")
+            publish_time = article.get('publish_time')
+            time_str = publish_time.strftime('%H:%M %d.%m') if publish_time else 'неизвестно'
+            print(f"   📰 {i}. {article['title'][:50]}... ({time_str})")
     
     # Тест 2: Получение новостей с фильтрацией по времени
     print(f"\n📋 Тест 2: Получение новостей за последние 30 минут")
@@ -455,8 +569,9 @@ def test_targeted_parser():
     if recent_articles:
         print(f"✅ Найдено {len(recent_articles)} новых новостей")
         for i, article in enumerate(recent_articles, 1):
-            publish_time = article.get('publish_time', datetime.now())
-            print(f"   📰 {i}. {article['title'][:50]}... ({publish_time.strftime('%H:%M')})")
+            publish_time = article.get('publish_time')
+            time_str = publish_time.strftime('%H:%M %d.%m') if publish_time else 'неизвестно'
+            print(f"   📰 {i}. {article['title'][:50]}... ({time_str})")
     else:
         print("📭 Новых новостей за последние 30 минут не найдено")
 
