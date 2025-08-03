@@ -7,7 +7,6 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 import asyncio
 import logging
-from tenacity import retry, stop_after_attempt, wait_fixed
 from parser import get_latest_news
 from espn_parser import get_espn_news
 from besoccer_parser import get_besoccer_news
@@ -45,20 +44,11 @@ def check_telegram_config():
     logger.info("Проверка Telegram настроек")
     return debug_environment()
 
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
-def post_with_timeout_sync(poster, article):
-    """Синхронная функция для публикации статьи с таймаутом."""
-    try:
-        return poster.post_article(article)
-    except Exception as e:
-        logger.error(f"Ошибка при публикации: {e}")
-        raise
-
 async def post_with_timeout(poster, article, timeout=CONFIG['POST_TIMEOUT']):
     """Асинхронная публикация статьи с таймаутом."""
     try:
         async with asyncio.timeout(timeout):
-            return await asyncio.to_thread(post_with_timeout_sync, poster, article)
+            return await asyncio.to_thread(poster.post_article, article)
     except asyncio.TimeoutError:
         logger.error(f"Таймаут при публикации: {article.get('title', '')[:60]}...")
         return False
@@ -118,7 +108,7 @@ async def main():
     
     logger.info(f"Получаем новости ESPN Soccer с {format_kiev_time(filter_time)} (Киев)...")
     try:
-        espn_news = get_espn_news(since_time=filter_time)
+        espn_news = await get_espn_news(since_time=filter_time)
         if espn_news:
             logger.info(f"ESPN Soccer: найдено {len(espn_news)} новостей")
             all_news.extend(espn_news)
@@ -129,7 +119,7 @@ async def main():
     
     logger.info(f"Получаем новости BeSoccer с {format_kiev_time(filter_time)} (Киев)...")
     try:
-        besoccer_news = get_besoccer_news(since_time=filter_time)
+        besoccer_news = await get_besoccer_news(since_time=filter_time)
         if besoccer_news:
             logger.info(f"BeSoccer: найдено {len(besoccer_news)} новостей")
             all_news.extend(besoccer_news)
