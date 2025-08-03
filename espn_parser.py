@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 from zoneinfo import ZoneInfo
 import logging
+import asyncio
 from functools import lru_cache
 from ai_processor import has_gemini_key, model as gemini_model
 
@@ -390,9 +391,10 @@ class ESPNSoccerParser:
         logger.info(f"Обработано {len(full_articles)} новых статей")
         return full_articles
 
-def get_espn_news(since_time: Optional[datetime] = None):
+async def get_espn_news(since_time: Optional[datetime] = None):
     """Функция для получения новостей ESPN Soccer."""
     parser = ESPNSoccerParser()
+    articles = await parser.get_latest_news(since_time)
     return [
         {
             'title': article['title'],
@@ -406,16 +408,21 @@ def get_espn_news(since_time: Optional[datetime] = None):
             'original_title': article.get('original_title', ''),
             'original_content': article.get('original_content', '')
         }
-        for article in asyncio.run(parser.get_latest_news(since_time))
+        for article in articles
     ]
 
 def test_espn_parser():
     """Тестирование парсера ESPN."""
+    import asyncio
+    loop = asyncio.get_event_loop()
+    articles = loop.run_until_complete(test_espn_parser_async())
+
+async def test_espn_parser_async():
     logger.info("ТЕСТИРУЕМ ESPN SOCCER PARSER")
     logger.info("=" * 60)
     
     parser = ESPNSoccerParser()
-    articles = asyncio.run(parser.get_latest_news())
+    articles = await parser.get_latest_news()
     
     if articles:
         logger.info(f"Найдено {len(articles)} новостей")
@@ -432,6 +439,7 @@ def test_espn_parser():
         logger.info(f"Переведенный заголовок: {test_article['title']}")
         logger.info(f"Оригинальный текст: {test_article.get('original_content', '')[:200]}...")
         logger.info(f"Переведенный текст: {test_article.get('content', '')[:200]}...")
+    return articles
 
 if __name__ == "__main__":
     test_espn_parser()
