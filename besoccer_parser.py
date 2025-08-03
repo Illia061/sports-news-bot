@@ -372,9 +372,10 @@ class BeSoccerParser:
         logger.info(f"Обработано {len(full_articles)} новых статей")
         return full_articles
 
-def get_besoccer_news(since_time: Optional[datetime] = None):
+async def get_besoccer_news(since_time: Optional[datetime] = None):
     """Функция для получения новостей BeSoccer."""
     parser = BeSoccerParser()
+    articles = await parser.get_latest_news(since_time)
     return [
         {
             'title': article['title'],
@@ -388,16 +389,21 @@ def get_besoccer_news(since_time: Optional[datetime] = None):
             'original_title': article.get('original_title', ''),
             'original_content': article.get('original_content', '')
         }
-        for article in asyncio.run(parser.get_latest_news(since_time))
+        for article in articles
     ]
 
 def test_besoccer_parser():
     """Тестирование парсера BeSoccer."""
+    import asyncio
+    loop = asyncio.get_event_loop()
+    articles = loop.run_until_complete(test_besoccer_parser_async())
+
+async def test_besoccer_parser_async():
     logger.info("ТЕСТИРУЕМ BESOCCER PARSER")
     logger.info("=" * 60)
     
     parser = BeSoccerParser()
-    articles = asyncio.run(parser.get_latest_news())
+    articles = await parser.get_latest_news()
     
     if articles:
         logger.info(f"Найдено {len(articles)} новостей")
@@ -414,6 +420,7 @@ def test_besoccer_parser():
         logger.info(f"Переведенный заголовок: {test_article['title']}")
         logger.info(f"Оригинальный текст: {test_article.get('original_content', '')[:200]}...")
         logger.info(f"Переведенный текст: {test_article.get('content', '')[:200]}...")
+    return articles
 
 if __name__ == "__main__":
     test_besoccer_parser()
