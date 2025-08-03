@@ -10,6 +10,7 @@ import logging
 from tenacity import retry, stop_after_attempt, wait_fixed
 from parser import get_latest_news
 from espn_parser import get_espn_news
+from besoccer_parser import get_besoccer_news
 from ai_processor import process_article_for_posting, has_gemini_key
 from ai_content_checker import check_content_similarity
 from db import get_last_run_time, update_last_run_time, is_already_posted, save_posted, cleanup_old_posts, debug_db_state, now_kiev, format_kiev_time, to_kiev_time
@@ -66,7 +67,7 @@ async def post_with_timeout(poster, article, timeout=CONFIG['POST_TIMEOUT']):
         return False
 
 async def main():
-    logger.info("Запуск бота парсинга и публикации новостей Football.ua + ESPN Soccer")
+    logger.info("Запуск бота парсинга и публикации новостей Football.ua + ESPN Soccer + BeSoccer")
     
     current_time_kiev = now_kiev()
     current_hour = current_time_kiev.hour
@@ -102,7 +103,7 @@ async def main():
     
     logger.info("-" * 70)
     
-    # Получаем новости из обоих источников
+    # Получаем новости из всех источников
     all_news = []
     
     logger.info(f"Получаем новости Football.ua с {format_kiev_time(filter_time)} (Киев)...")
@@ -126,8 +127,19 @@ async def main():
     except Exception as e:
         logger.error(f"Ошибка получения новостей ESPN: {e}")
     
+    logger.info(f"Получаем новости BeSoccer с {format_kiev_time(filter_time)} (Киев)...")
+    try:
+        besoccer_news = get_besoccer_news(since_time=filter_time)
+        if besoccer_news:
+            logger.info(f"BeSoccer: найдено {len(besoccer_news)} новостей")
+            all_news.extend(besoccer_news)
+        else:
+            logger.info("BeSoccer: новостей не найдено")
+    except Exception as e:
+        logger.error(f"Ошибка получения новостей BeSoccer: {e}")
+    
     if not all_news:
-        logger.info("Новостей с обоих источников не найдено")
+        logger.info("Новостей с всех источников не найдено")
         return
     
     logger.info(f"Всего найдено {len(all_news)} новостей")
@@ -287,6 +299,7 @@ async def main():
     logger.info(f"С изображениями: {sum(1 for a in valid_articles if a.get('image_path') or a.get('image_url'))}")
     logger.info(f"С AI резюме: {'Да' if has_gemini_key() else 'Нет'}")
     logger.info(f"С переводом ESPN: {'Да' if has_gemini_key() else 'Нет'}")
+    logger.info(f"С переводом BeSoccer: {'Да' if has_gemini_key() else 'Нет'}")
     logger.info(f"Telegram публикация: {'Включена' if telegram_enabled else 'Отключена'}")
     logger.info(f"Время выполнения: {format_kiev_time(current_time_kiev)} (Киев)")
     logger.info("Работа завершена!")
