@@ -9,6 +9,7 @@ import logging
 from functools import lru_cache
 from ai_processor import has_gemini_key, model as gemini_model
 import asyncio
+import time
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -59,20 +60,37 @@ class BeSoccerParser:
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
             "Connection": "keep-alive",
         })
 
     def get_page_content(self, url):
-        """Получает содержимое страницы."""
-        try:
-            response = self.session.get(url, timeout=CONFIG['REQUEST_TIMEOUT'])
-            response.raise_for_status()
-            return BeautifulSoup(response.text, "html.parser")
-        except Exception as e:
-            logger.error(f"Ошибка загрузки {url}: {e}")
-            return None
+        """Получает содержимое страницы с повторными попытками."""
+        max_retries = 3
+        retry_delay = 5  # Задержка между попытками в секундах
+
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Попытка загрузки {url}, попытка {attempt + 1}/{max_retries}")
+                response = self.session.get(url, timeout=CONFIG['REQUEST_TIMEOUT'])
+                response.raise_for_status()  # Проверяет статус-код
+                logger.info(f"Успешно загружено: {url}")
+                return BeautifulSoup(response.text, "html.parser")
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 406:
+                    logger.error(f"Ошибка 406: {e} для URL: {url}. Попытка {attempt + 1}/{max_retries}")
+                    if 'content-type' in e.response.headers:
+                        logger.error(f"Тип контента ответа: {e.response.headers['content-type']}")
+                else:
+                    logger.error(f"HTTP ошибка: {e} для URL: {url}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    continue
+                return None
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Ошибка загрузки {url}: {e}")
+                return None
 
     @lru_cache(maxsize=32)
     def find_latest_news_section(self, soup):
