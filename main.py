@@ -8,7 +8,6 @@ from zoneinfo import ZoneInfo
 import asyncio
 import logging
 from parser import get_latest_news
-from espn_parser import get_espn_news
 from besoccer_parser import get_besoccer_news
 from ai_processor import process_article_for_posting, has_gemini_key
 from ai_content_checker import check_content_similarity
@@ -57,7 +56,7 @@ async def post_with_timeout(poster, article, timeout=CONFIG['POST_TIMEOUT']):
         return False
 
 async def main():
-    logger.info("Запуск бота парсинга и публикации новостей Football.ua + ESPN Soccer + BeSoccer")
+    logger.info("Запуск бота парсинга и публикации новостей Football.ua + BeSoccer")
     
     current_time_kiev = now_kiev()
     current_hour = current_time_kiev.hour
@@ -105,17 +104,6 @@ async def main():
         all_news.extend(football_ua_news)
     else:
         logger.info("Football.ua: новостей не найдено")
-    
-    logger.info(f"Получаем новости ESPN Soccer с {format_kiev_time(filter_time)} (Киев)...")
-    try:
-        espn_news = await get_espn_news(since_time=filter_time)
-        if espn_news:
-            logger.info(f"ESPN Soccer: найдено {len(espn_news)} новостей")
-            all_news.extend(espn_news)
-        else:
-            logger.info("ESPN Soccer: новостей не найдено")
-    except Exception as e:
-        logger.error(f"Ошибка получения новостей ESPN: {e}")
     
     logger.info(f"Получаем новости BeSoccer с {format_kiev_time(filter_time)} (Киев)...")
     try:
@@ -288,7 +276,6 @@ async def main():
     logger.info(f"К публикации: {len(articles_to_publish) if telegram_enabled else 'Неизвестно'}")
     logger.info(f"С изображениями: {sum(1 for a in valid_articles if a.get('image_path') or a.get('image_url'))}")
     logger.info(f"С AI резюме: {'Да' if has_gemini_key() else 'Нет'}")
-    logger.info(f"С переводом ESPN: {'Да' if has_gemini_key() else 'Нет'}")
     logger.info(f"С переводом BeSoccer: {'Да' if has_gemini_key() else 'Нет'}")
     logger.info(f"Telegram публикация: {'Включена' if telegram_enabled else 'Отключена'}")
     logger.info(f"Время выполнения: {format_kiev_time(current_time_kiev)} (Киев)")
