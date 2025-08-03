@@ -49,7 +49,8 @@ CONFIG = {
     'META_TIME_SELECTORS': [
         'meta[property="article:published_time"]',
         'meta[name="publish_date"]', 'meta[property="og:published_time"]'
-    ]
+    ],
+    'EXCLUDE_IMAGE_KEYWORDS': ['logo', 'icon', 'banner', 'advertisement', 'thumb', '/16x', '/32x']
 }
 
 class BeSoccerParser:
@@ -252,7 +253,29 @@ class BeSoccerParser:
         return main_content
 
     def extract_main_image(self, soup, base_url):
-        """Извлекает главное изображение статьи."""
+        """Извлекает главное изображение статьи с приоритетом на контент."""
+        logger.info("Поиск изображения для статьи...")
+        
+        # Поиск изображения внутри блока контента
+        for content_selector in CONFIG['CONTENT_SELECTORS']:
+            content_elem = soup.select_one(content_selector)
+            if content_elem:
+                for img_selector in ['img', '.news-image img', '.article-image img']:
+                    img_elem = content_elem.select_one(img_selector)
+                    if img_elem:
+                        image_url = img_elem.get('src') or img_elem.get('data-src') or img_elem.get('data-original')
+                        if image_url:
+                            if image_url.startswith('//'):
+                                image_url = 'https:' + image_url
+                            elif image_url.startswith('/'):
+                                image_url = 'https://www.besoccer.com' + image_url
+                            elif not image_url.startswith('http'):
+                                image_url = urljoin(base_url, image_url)
+                            if not any(keyword in image_url.lower() for keyword in CONFIG['EXCLUDE_IMAGE_KEYWORDS']):
+                                logger.info(f"Найдено изображение в контекте: {image_url}")
+                                return image_url
+
+        # Поиск по общим селекторам, если в контекте не найдено
         for selector in CONFIG['IMAGE_SELECTORS']:
             img_elem = soup.select_one(selector)
             image_url = img_elem.get('content' if 'meta' in selector else 'src' or 'data-src' or 'data-original', '')
@@ -263,8 +286,11 @@ class BeSoccerParser:
                     image_url = 'https://www.besoccer.com' + image_url
                 elif not image_url.startswith('http'):
                     image_url = urljoin(base_url, image_url)
-                if not any(small in image_url.lower() for small in ['icon', 'logo', 'thumb', 'avatar', '/16x', '/32x']):
+                if not any(keyword in image_url.lower() for keyword in CONFIG['EXCLUDE_IMAGE_KEYWORDS']):
+                    logger.info(f"Найдено изображение по селектору {selector}: {image_url}")
                     return image_url
+
+        logger.warning("Изображение не найдено или все кандидаты исключены")
         return ''
 
     def get_full_article_data(self, news_item, since_time: Optional[datetime] = None):
@@ -379,7 +405,7 @@ def test_besoccer_parser():
             time_str = article.get('publish_time').strftime('%H:%M %d.%m') if article.get('publish_time') else 'неизвестно'
             logger.info(f"{i}. {article['title'][:60]}... ({time_str})")
             logger.info(f"   Оригинал: {article.get('original_title', '')[:60]}...")
-            logger.info(f"   Изображение: {'✅' if article.get('image_url') else '❌'}")
+            logger.info(f"   Изображение: {'✅ ' + article['image_url'][:50] + '...' if article.get('image_url') else '❌'}")
     
     if articles:
         logger.info("Тест качества перевода")
