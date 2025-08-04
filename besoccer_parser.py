@@ -10,6 +10,7 @@ from functools import lru_cache
 from ai_processor import has_gemini_key, model as gemini_model
 import asyncio
 import time
+import random
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -20,8 +21,8 @@ KIEV_TZ = ZoneInfo("Europe/Kiev")
 # Конфигурация
 CONFIG = {
     'BASE_URL': "https://www.besoccer.com/news/latest",
-    'REQUEST_TIMEOUT': 15,
-    'REQUEST_DELAY': 2,
+    'REQUEST_TIMEOUT': 20,
+    'REQUEST_DELAY': (3, 7),  # Случайная задержка между запросами
     'MAX_NEWS_ITEMS': 8,
     'SOCCER_PATTERNS': [
         r'/news/', r'/match/', r'/player/', r'/team/', r'/competition/',
@@ -58,47 +59,127 @@ class BeSoccerParser:
     def __init__(self):
         self.base_url = CONFIG['BASE_URL']
         self.session = requests.Session()
+        
+        # Список User-Agent для ротации
+        self.user_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15"
+        ]
+        
+        self.update_headers()
+
+    def update_headers(self):
+        """Обновляет заголовки с случайным User-Agent"""
         self.session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9",
+            "User-Agent": random.choice(self.user_agents),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
             "Accept-Language": "en-US,en;q=0.9,uk;q=0.8,ru;q=0.7",
             "Accept-Encoding": "gzip, deflate, br",
-            "Referer": "https://www.besoccer.com/",
             "Connection": "keep-alive",
             "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-Dest": "document",
             "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
             "Sec-Fetch-User": "?1",
-            "Sec-Fetch-Dest": "document"
+            "Cache-Control": "max-age=0",
+            "DNT": "1",
+            "Sec-CH-UA": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+            "Sec-CH-UA-Mobile": "?0",
+            "Sec-CH-UA-Platform": '"Windows"'
         })
 
-
     def get_page_content(self, url):
-        """Получает содержимое страницы с повторными попытками."""
+        """Получает содержимое страницы с улучшенной обработкой ошибок."""
         max_retries = 3
-        retry_delay = 5  # Задержка между попытками в секундах
+        retry_delays = [5, 10, 15]  # Увеличивающиеся задержки
 
         for attempt in range(max_retries):
             try:
+                # Обновляем заголовки для каждой попытки
+                self.update_headers()
+                
                 logger.info(f"Попытка загрузки {url}, попытка {attempt + 1}/{max_retries}")
-                response = self.session.get(url, timeout=CONFIG['REQUEST_TIMEOUT'])
-                response.raise_for_status()  # Проверяет статус-код
-                logger.info(f"Успешно загружено: {url}")
-                return BeautifulSoup(response.text, "html.parser")
+                
+                # Добавляем случайную задержку перед запросом
+                if attempt > 0:
+                    delay = retry_delays[attempt - 1] + random.uniform(1, 3)
+                    logger.info(f"Ожидание {delay:.1f} секунд...")
+                    time.sleep(delay)
+                
+                response = self.session.get(
+                    url, 
+                    timeout=CONFIG['REQUEST_TIMEOUT'],
+                    allow_redirects=True,
+                    verify=True
+                )
+                
+                # Детальная информация об ответе
+                logger.info(f"Статус ответа: {response.status_code}")
+                logger.info(f"Заголовки ответа: {dict(list(response.headers.items())[:5])}")
+                
+                if response.status_code == 200:
+                    logger.info(f"Успешно загружено: {url}")
+                    return BeautifulSoup(response.text, "html.parser")
+                
+                response.raise_for_status()
+                
             except requests.exceptions.HTTPError as e:
                 if e.response.status_code == 406:
-                    logger.error(f"Ошибка 406: {e} для URL: {url}. Попытка {attempt + 1}/{max_retries}")
-                    if 'content-type' in e.response.headers:
-                        logger.error(f"Тип контента ответа: {e.response.headers['content-type']}")
+                    logger.error(f"Ошибка 406: Сервер не принимает запрос. Попытка {attempt + 1}/{max_retries}")
+                    logger.error(f"Заголовки запроса: {dict(self.session.headers)}")
+                    logger.error(f"Заголовки ответа: {dict(e.response.headers) if e.response else 'Нет ответа'}")
+                    
+                    # Пробуем альтернативные заголовки для следующей попытки
+                    if attempt < max_retries - 1:
+                        self.try_alternative_headers()
+                        continue
+                        
+                elif e.response.status_code == 403:
+                    logger.error(f"Ошибка 403: Доступ запрещен. Возможно, IP заблокирован.")
+                elif e.response.status_code == 429:
+                    logger.error(f"Ошибка 429: Слишком много запросов. Увеличиваем задержку.")
+                    if attempt < max_retries - 1:
+                        time.sleep(30 + random.uniform(10, 20))
+                        continue
                 else:
-                    logger.error(f"HTTP ошибка: {e} для URL: {url}")
+                    logger.error(f"HTTP ошибка {e.response.status_code}: {e}")
+                
+                if attempt == max_retries - 1:
+                    logger.error(f"Все попытки исчерпаны для {url}")
+                    return None
+                    
+            except requests.exceptions.Timeout:
+                logger.error(f"Таймаут при загрузке {url}")
                 if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
                     continue
-                return None
+                    
+            except requests.exceptions.ConnectionError as e:
+                logger.error(f"Ошибка соединения для {url}: {e}")
+                if attempt < max_retries - 1:
+                    continue
+                    
             except requests.exceptions.RequestException as e:
-                logger.error(f"Ошибка загрузки {url}: {e}")
-                return None
+                logger.error(f"Ошибка запроса для {url}: {e}")
+                if attempt < max_retries - 1:
+                    continue
+
+        return None
+
+    def try_alternative_headers(self):
+        """Пробует альтернативные заголовки для обхода блокировки"""
+        logger.info("Пробуем альтернативные заголовки...")
+        
+        # Минимальный набор заголовков
+        self.session.headers.clear()
+        self.session.headers.update({
+            "User-Agent": random.choice(self.user_agents),
+            "Accept": "*/*",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Connection": "keep-alive"
+        })
 
     @lru_cache(maxsize=32)
     def find_latest_news_section(self, soup):
@@ -304,17 +385,18 @@ class BeSoccerParser:
         # Поиск по общим селекторам, если в контекте не найдено
         for selector in CONFIG['IMAGE_SELECTORS']:
             img_elem = soup.select_one(selector)
-            image_url = img_elem.get('content' if 'meta' in selector else 'src' or 'data-src' or 'data-original', '')
-            if image_url:
-                if image_url.startswith('//'):
-                    image_url = 'https:' + image_url
-                elif image_url.startswith('/'):
-                    image_url = 'https://www.besoccer.com' + image_url
-                elif not image_url.startswith('http'):
-                    image_url = urljoin(base_url, image_url)
-                if not any(keyword in image_url.lower() for keyword in CONFIG['EXCLUDE_IMAGE_KEYWORDS']):
-                    logger.info(f"Найдено изображение по селектору {selector}: {image_url}")
-                    return image_url
+            if img_elem:
+                image_url = img_elem.get('content' if 'meta' in selector else 'src') or img_elem.get('data-src') or img_elem.get('data-original')
+                if image_url:
+                    if image_url.startswith('//'):
+                        image_url = 'https:' + image_url
+                    elif image_url.startswith('/'):
+                        image_url = 'https://www.besoccer.com' + image_url
+                    elif not image_url.startswith('http'):
+                        image_url = urljoin(base_url, image_url)
+                    if not any(keyword in image_url.lower() for keyword in CONFIG['EXCLUDE_IMAGE_KEYWORDS']):
+                        logger.info(f"Найдено изображение по селектору {selector}: {image_url}")
+                        return image_url
 
         logger.warning("Изображение не найдено или все кандидаты исключены")
         return ''
@@ -322,6 +404,12 @@ class BeSoccerParser:
     def get_full_article_data(self, news_item, since_time: Optional[datetime] = None):
         """Получает полные данные статьи с переводом."""
         url = news_item['url']
+        
+        # Добавляем случайную задержку между запросами
+        delay = random.uniform(*CONFIG['REQUEST_DELAY'])
+        logger.info(f"Ожидание {delay:.1f} секунд перед запросом...")
+        time.sleep(delay)
+        
         soup = self.get_page_content(url)
         if not soup:
             return None
@@ -393,7 +481,6 @@ class BeSoccerParser:
                 break
             if article_data:
                 full_articles.append(article_data)
-            await asyncio.sleep(CONFIG['REQUEST_DELAY'])
 
         logger.info(f"Обработано {len(full_articles)} новых статей")
         return full_articles
