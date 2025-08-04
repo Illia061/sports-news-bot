@@ -1,16 +1,22 @@
-import requests
-from bs4 import BeautifulSoup
+import asyncio
 import re
-from urllib.parse import urljoin
+import logging
+import random
+import time
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
+from urllib.parse import urljoin
 from zoneinfo import ZoneInfo
-import logging
-from functools import lru_cache
+
+try:
+    from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    PLAYWRIGHT_AVAILABLE = False
+    print("Playwright не установлен. Установите: pip install playwright")
+    print("Затем выполните: playwright install")
+
 from ai_processor import has_gemini_key, model as gemini_model
-import asyncio
-import time
-import random
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -21,9 +27,11 @@ KIEV_TZ = ZoneInfo("Europe/Kiev")
 # Конфигурация
 CONFIG = {
     'BASE_URL': "https://www.besoccer.com/news/latest",
-    'REQUEST_TIMEOUT': 20,
-    'REQUEST_DELAY': (3, 7),  # Случайная задержка между запросами
+    'PAGE_TIMEOUT': 30000,  # 30 секунд
+    'NAVIGATION_TIMEOUT': 20000,  # 20 секунд
+    'REQUEST_DELAY': (2, 5),  # Случайная задержка между запросами
     'MAX_NEWS_ITEMS': 8,
+    'HEADLESS': True,  # Установите False для отладки
     'SOCCER_PATTERNS': [
         r'/news/', r'/match/', r'/player/', r'/team/', r'/competition/',
         r'premier-league', r'champions-league', r'la-liga', r'serie-a',
@@ -55,133 +63,176 @@ CONFIG = {
     'EXCLUDE_IMAGE_KEYWORDS': ['logo', 'icon', 'banner', 'advertisement', 'thumb', '/16x', '/32x']
 }
 
-class BeSoccerParser:
+class BeSoccerPlaywrightParser:
     def __init__(self):
+        if not PLAYWRIGHT_AVAILABLE:
+            raise ImportError("Playwright не установлен. Выполните: pip install playwright && playwright install")
+        
         self.base_url = CONFIG['BASE_URL']
-        self.session = requests.Session()
-        
-        # Список User-Agent для ротации
-        self.user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15"
-        ]
-        
-        self.update_headers()
+        self.playwright = None
+        self.browser = None
+        self.context = None
 
-    def update_headers(self):
-        """Обновляет заголовки с случайным User-Agent"""
-        self.session.headers.update({
-            "User-Agent": random.choice(self.user_agents),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-            "Accept-Language": "en-US,en;q=0.9,uk;q=0.8,ru;q=0.7",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
-            "Cache-Control": "max-age=0",
-            "DNT": "1",
-            "Sec-CH-UA": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-            "Sec-CH-UA-Mobile": "?0",
-            "Sec-CH-UA-Platform": '"Windows"'
-        })
+    async def __aenter__(self):
+        """Асинхронный контекстный менеджер для инициализации браузера"""
+        await self.init_browser()
+        return self
 
-    def get_page_content(self, url):
-        """Получает содержимое страницы с улучшенной обработкой ошибок."""
-        max_retries = 3
-        retry_delays = [5, 10, 15]  # Увеличивающиеся задержки
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Закрытие браузера"""
+        await self.close_browser()
 
-        for attempt in range(max_retries):
-            try:
-                # Обновляем заголовки для каждой попытки
-                self.update_headers()
+    async def init_browser(self):
+        """Инициализация браузера Playwright"""
+        try:
+            self.playwright = await async_playwright().start()
+            
+            # Запускаем браузер с параметрами для обхода детекции
+            self.browser = await self.playwright.chromium.launch(
+                headless=CONFIG['HEADLESS'],
+                args=[
+                    '--no-sandbox',
+                    '--disable-blink-features=AutomationControlled',
+                    '--disable-features=VizDisplayCompositor',
+                    '--disable-extensions',
+                    '--disable-plugins',
+                    '--disable-web-security',
+                    '--disable-features=TranslateUI',
+                    '--disable-ipc-flooding-protection',
+                    '--disable-background-timer-throttling',
+                    '--disable-backgrounding-occluded-windows',
+                    '--disable-renderer-backgrounding'
+                ]
+            )
+            
+            # Создаем контекст с дополнительными параметрами
+            self.context = await self.browser.new_context(
+                viewport={'width': 1920, 'height': 1080},
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                locale='en-US',
+                timezone_id='Europe/Kiev',
+                extra_http_headers={
+                    'Accept-Language': 'en-US,en;q=0.9,uk;q=0.8',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1',
+                }
+            )
+            
+            # Добавляем скрипт для маскировки автоматизации
+            await self.context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined,
+                });
                 
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => [1, 2, 3, 4, 5],
+                });
+                
+                Object.defineProperty(navigator, 'languages', {
+                    get: () => ['en-US', 'en', 'uk'],
+                });
+                
+                window.chrome = {
+                    runtime: {},
+                };
+                
+                Object.defineProperty(navigator, 'permissions', {
+                    get: () => ({
+                        query: () => Promise.resolve({ state: 'granted' }),
+                    }),
+                });
+            """)
+            
+            logger.info("Браузер Playwright успешно инициализирован")
+            
+        except Exception as e:
+            logger.error(f"Ошибка инициализации браузера: {e}")
+            raise
+
+    async def close_browser(self):
+        """Закрытие браузера и освобождение ресурсов"""
+        try:
+            if self.context:
+                await self.context.close()
+            if self.browser:
+                await self.browser.close()
+            if self.playwright:
+                await self.playwright.stop()
+            logger.info("Браузер закрыт")
+        except Exception as e:
+            logger.error(f"Ошибка при закрытии браузера: {e}")
+
+    async def get_page_content(self, url: str, max_retries: int = 3):
+        """Получает содержимое страницы через Playwright"""
+        for attempt in range(max_retries):
+            page = None
+            try:
                 logger.info(f"Попытка загрузки {url}, попытка {attempt + 1}/{max_retries}")
                 
-                # Добавляем случайную задержку перед запросом
+                page = await self.context.new_page()
+                
+                # Устанавливаем таймауты
+                page.set_default_timeout(CONFIG['PAGE_TIMEOUT'])
+                page.set_default_navigation_timeout(CONFIG['NAVIGATION_TIMEOUT'])
+                
+                # Добавляем случайную задержку
                 if attempt > 0:
-                    delay = retry_delays[attempt - 1] + random.uniform(1, 3)
+                    delay = random.uniform(3, 8)
                     logger.info(f"Ожидание {delay:.1f} секунд...")
-                    time.sleep(delay)
+                    await asyncio.sleep(delay)
                 
-                response = self.session.get(
-                    url, 
-                    timeout=CONFIG['REQUEST_TIMEOUT'],
-                    allow_redirects=True,
-                    verify=True
-                )
+                # Переходим на страницу
+                response = await page.goto(url, wait_until='domcontentloaded')
                 
-                # Детальная информация об ответе
-                logger.info(f"Статус ответа: {response.status_code}")
-                logger.info(f"Заголовки ответа: {dict(list(response.headers.items())[:5])}")
-                
-                if response.status_code == 200:
-                    logger.info(f"Успешно загружено: {url}")
-                    return BeautifulSoup(response.text, "html.parser")
-                
-                response.raise_for_status()
-                
-            except requests.exceptions.HTTPError as e:
-                if e.response.status_code == 406:
-                    logger.error(f"Ошибка 406: Сервер не принимает запрос. Попытка {attempt + 1}/{max_retries}")
-                    logger.error(f"Заголовки запроса: {dict(self.session.headers)}")
-                    logger.error(f"Заголовки ответа: {dict(e.response.headers) if e.response else 'Нет ответа'}")
+                if response:
+                    logger.info(f"Статус ответа: {response.status}")
                     
-                    # Пробуем альтернативные заголовки для следующей попытки
-                    if attempt < max_retries - 1:
-                        self.try_alternative_headers()
-                        continue
+                    if response.status == 200:
+                        # Ждем загрузки основного контента
+                        try:
+                            await page.wait_for_selector('body', timeout=10000)
+                            # Дополнительное ожидание для динамического контента
+                            await asyncio.sleep(random.uniform(2, 4))
+                        except PlaywrightTimeoutError:
+                            logger.warning("Таймаут ожидания селектора, продолжаем...")
                         
-                elif e.response.status_code == 403:
-                    logger.error(f"Ошибка 403: Доступ запрещен. Возможно, IP заблокирован.")
-                elif e.response.status_code == 429:
-                    logger.error(f"Ошибка 429: Слишком много запросов. Увеличиваем задержку.")
-                    if attempt < max_retries - 1:
-                        time.sleep(30 + random.uniform(10, 20))
-                        continue
-                else:
-                    logger.error(f"HTTP ошибка {e.response.status_code}: {e}")
+                        # Получаем HTML
+                        html_content = await page.content()
+                        logger.info(f"Успешно загружено: {url} ({len(html_content)} символов)")
+                        
+                        # Импортируем BeautifulSoup здесь для обработки HTML
+                        from bs4 import BeautifulSoup
+                        return BeautifulSoup(html_content, "html.parser")
+                    
+                    elif response.status == 403:
+                        logger.error(f"Ошибка 403: Доступ запрещен для {url}")
+                    elif response.status == 406:
+                        logger.error(f"Ошибка 406: Неприемлемый запрос для {url}")
+                    else:
+                        logger.error(f"HTTP ошибка {response.status} для {url}")
                 
-                if attempt == max_retries - 1:
-                    logger.error(f"Все попытки исчерпаны для {url}")
-                    return None
-                    
-            except requests.exceptions.Timeout:
-                logger.error(f"Таймаут при загрузке {url}")
-                if attempt < max_retries - 1:
-                    continue
-                    
-            except requests.exceptions.ConnectionError as e:
-                logger.error(f"Ошибка соединения для {url}: {e}")
-                if attempt < max_retries - 1:
-                    continue
-                    
-            except requests.exceptions.RequestException as e:
-                logger.error(f"Ошибка запроса для {url}: {e}")
-                if attempt < max_retries - 1:
-                    continue
-
+                else:
+                    logger.error(f"Нет ответа от сервера для {url}")
+                
+            except PlaywrightTimeoutError as e:
+                logger.error(f"Таймаут при загрузке {url}: {e}")
+                
+            except Exception as e:
+                logger.error(f"Ошибка при загрузке {url}: {e}")
+                
+            finally:
+                if page:
+                    await page.close()
+            
+            # Если не последняя попытка, ждем перед повтором
+            if attempt < max_retries - 1:
+                await asyncio.sleep(random.uniform(5, 10))
+        
+        logger.error(f"Не удалось загрузить {url} после {max_retries} попыток")
         return None
 
-    def try_alternative_headers(self):
-        """Пробует альтернативные заголовки для обхода блокировки"""
-        logger.info("Пробуем альтернативные заголовки...")
-        
-        # Минимальный набор заголовков
-        self.session.headers.clear()
-        self.session.headers.update({
-            "User-Agent": random.choice(self.user_agents),
-            "Accept": "*/*",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Connection": "keep-alive"
-        })
-
-    @lru_cache(maxsize=32)
     def find_latest_news_section(self, soup):
         """Находит блок 'Latest News' на BeSoccer."""
         header_texts = ["Latest News", "latest news", "News", "news"]
@@ -401,16 +452,16 @@ class BeSoccerParser:
         logger.warning("Изображение не найдено или все кандидаты исключены")
         return ''
 
-    def get_full_article_data(self, news_item, since_time: Optional[datetime] = None):
+    async def get_full_article_data(self, news_item, since_time: Optional[datetime] = None):
         """Получает полные данные статьи с переводом."""
         url = news_item['url']
         
         # Добавляем случайную задержку между запросами
         delay = random.uniform(*CONFIG['REQUEST_DELAY'])
         logger.info(f"Ожидание {delay:.1f} секунд перед запросом...")
-        time.sleep(delay)
+        await asyncio.sleep(delay)
         
-        soup = self.get_page_content(url)
+        soup = await self.get_page_content(url)
         if not soup:
             return None
 
@@ -456,7 +507,7 @@ class BeSoccerParser:
     async def get_latest_news(self, since_time: Optional[datetime] = None):
         """Получает новости BeSoccer с переводом."""
         logger.info(f"Загружаем страницу BeSoccer... {'с ' + since_time.strftime('%H:%M %d.%m.%Y') if since_time else ''}")
-        soup = self.get_page_content(self.base_url)
+        soup = await self.get_page_content(self.base_url)
         if not soup:
             logger.error("Не удалось загрузить страницу")
             return []
@@ -475,7 +526,7 @@ class BeSoccerParser:
         full_articles = []
         for i, news_item in enumerate(news_items, 1):
             logger.info(f"Обрабатываем новость {i}/{len(news_items)}: {news_item['title'][:50]}...")
-            article_data = self.get_full_article_data(news_item, since_time)
+            article_data = await self.get_full_article_data(news_item, since_time)
             if since_time and article_data is None:
                 logger.info("Обнаружена старая новость, прекращаем обработку")
                 break
@@ -486,54 +537,58 @@ class BeSoccerParser:
         return full_articles
 
 async def get_besoccer_news(since_time: Optional[datetime] = None):
-    """Функция для получения новостей BeSoccer."""
-    parser = BeSoccerParser()
-    articles = await parser.get_latest_news(since_time)
-    return [
-        {
-            'title': article['title'],
-            'link': article['url'],
-            'url': article['url'],
-            'summary': article['summary'],
-            'image_url': article['image_url'],
-            'content': article['content'],
-            'publish_time': article.get('publish_time'),
-            'source': 'BeSoccer',
-            'original_title': article.get('original_title', ''),
-            'original_content': article.get('original_content', '')
-        }
-        for article in articles
-    ]
-
-def test_besoccer_parser():
-    """Тестирование парсера BeSoccer."""
-    import asyncio
-    loop = asyncio.get_event_loop()
-    articles = loop.run_until_complete(test_besoccer_parser_async())
+    """Функция для получения новостей BeSoccer с использованием Playwright."""
+    async with BeSoccerPlaywrightParser() as parser:
+        articles = await parser.get_latest_news(since_time)
+        return [
+            {
+                'title': article['title'],
+                'link': article['url'],
+                'url': article['url'],
+                'summary': article['summary'],
+                'image_url': article['image_url'],
+                'content': article['content'],
+                'publish_time': article.get('publish_time'),
+                'source': 'BeSoccer',
+                'original_title': article.get('original_title', ''),
+                'original_content': article.get('original_content', '')
+            }
+            for article in articles
+        ]
 
 async def test_besoccer_parser_async():
-    logger.info("ТЕСТИРУЕМ BESOCCER PARSER")
+    """Тестирование парсера BeSoccer с Playwright."""
+    logger.info("ТЕСТИРУЕМ BESOCCER PARSER С PLAYWRIGHT")
     logger.info("=" * 60)
     
-    parser = BeSoccerParser()
-    articles = await parser.get_latest_news()
-    
-    if articles:
-        logger.info(f"Найдено {len(articles)} новостей")
-        for i, article in enumerate(articles, 1):
-            time_str = article.get('publish_time').strftime('%H:%M %d.%m') if article.get('publish_time') else 'неизвестно'
-            logger.info(f"{i}. {article['title'][:60]}... ({time_str})")
-            logger.info(f"   Оригинал: {article.get('original_title', '')[:60]}...")
-            logger.info(f"   Изображение: {'✅ ' + article['image_url'][:50] + '...' if article.get('image_url') else '❌'}")
-    
-    if articles:
-        logger.info("Тест качества перевода")
-        test_article = articles[0]
-        logger.info(f"Оригинальный заголовок: {test_article.get('original_title', '')}")
-        logger.info(f"Переведенный заголовок: {test_article['title']}")
-        logger.info(f"Оригинальный текст: {test_article.get('original_content', '')[:200]}...")
-        logger.info(f"Переведенный текст: {test_article.get('content', '')[:200]}...")
-    return articles
+    try:
+        async with BeSoccerPlaywrightParser() as parser:
+            articles = await parser.get_latest_news()
+            
+            if articles:
+                logger.info(f"Найдено {len(articles)} новостей")
+                for i, article in enumerate(articles, 1):
+                    time_str = article.get('publish_time').strftime('%H:%M %d.%m') if article.get('publish_time') else 'неизвестно'
+                    logger.info(f"{i}. {article['title'][:60]}... ({time_str})")
+                    logger.info(f"   Оригинал: {article.get('original_title', '')[:60]}...")
+                    logger.info(f"   Изображение: {'✅ ' + article['image_url'][:50] + '...' if article.get('image_url') else '❌'}")
+            
+            if articles:
+                logger.info("Тест качества перевода")
+                test_article = articles[0]
+                logger.info(f"Оригинальный заголовок: {test_article.get('original_title', '')}")
+                logger.info(f"Переведенный заголовок: {test_article['title']}")
+                logger.info(f"Оригинальный текст: {test_article.get('original_content', '')[:200]}...")
+                logger.info(f"Переведенный текст: {test_article.get('content', '')[:200]}...")
+            return articles
+            
+    except Exception as e:
+        logger.error(f"Ошибка тестирования: {e}")
+        return []
+
+def test_besoccer_parser():
+    """Синхронная обертка для тестирования."""
+    return asyncio.run(test_besoccer_parser_async())
 
 if __name__ == "__main__":
     test_besoccer_parser()
