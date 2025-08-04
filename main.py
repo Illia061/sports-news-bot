@@ -8,7 +8,6 @@ from zoneinfo import ZoneInfo
 import asyncio
 import logging
 from parser import get_latest_news
-from besoccer_parser import get_besoccer_news
 from ai_processor import process_article_for_posting, has_gemini_key
 from ai_content_checker import check_content_similarity
 from db import get_last_run_time, update_last_run_time, is_already_posted, save_posted, cleanup_old_posts, debug_db_state, now_kiev, format_kiev_time, to_kiev_time
@@ -25,13 +24,24 @@ CONFIG = {
     'WORKING_HOURS': (6, 1)  # с 06:00 до 01:00
 }
 
-# Импортируем Telegram модуль
+# Импортируем модули
 try:
     from telegram_bot import TelegramPosterSync, debug_environment
     TELEGRAM_AVAILABLE = True
 except ImportError:
     logger.warning("Модуль telegram_bot.py не найден")
     TELEGRAM_AVAILABLE = False
+
+# Импортируем BeSoccer парсер
+try:
+    from besoccer_parser import get_besoccer_news
+    BESOCCER_AVAILABLE = True
+    logger.info("BeSoccer парсер с Playwright загружен")
+except ImportError as e:
+    logger.warning(f"BeSoccer парсер недоступен: {e}")
+    logger.warning("Для работы с BeSoccer установите: pip install playwright beautifulsoup4")
+    logger.warning("Затем выполните: playwright install")
+    BESOCCER_AVAILABLE = False
 
 KIEV_TZ = ZoneInfo("Europe/Kiev")
 
@@ -54,6 +64,32 @@ async def post_with_timeout(poster, article, timeout=CONFIG['POST_TIMEOUT']):
     except Exception as e:
         logger.error(f"Ошибка при публикации: {e}")
         return False
+
+async def get_besoccer_news_safely(filter_time):
+    """Безопасно получает новости BeSoccer с обработкой ошибок."""
+    if not BESOCCER_AVAILABLE:
+        logger.info("BeSoccer парсер недоступен - пропускаем")
+        return []
+    
+    try:
+        logger.info(f"Получаем новости BeSoccer с {format_kiev_time(filter_time)} (Киев)...")
+        besoccer_news = await get_besoccer_news(since_time=filter_time)
+        if besoccer_news:
+            logger.info(f"BeSoccer: найдено {len(besoccer_news)} новостей")
+            return besoccer_news
+        else:
+            logger.info("BeSoccer: новостей не найдено")
+            return []
+    except ImportError as e:
+        logger.warning(f"Playwright не установлен: {e}")
+        logger.warning("Для работы с BeSoccer выполните:")
+        logger.warning("pip install playwright beautifulsoup4")
+        logger.warning("playwright install")
+        return []
+    except Exception as e:
+        logger.error(f"Ошибка получения новостей BeSoccer: {e}")
+        logger.error("Продолжаем работу с другими источниками...")
+        return []
 
 async def main():
     logger.info("Запуск бота парсинга и публикации новостей Football.ua + BeSoccer")
@@ -89,32 +125,30 @@ async def main():
     
     telegram_enabled = check_telegram_config()
     logger.info(f"Telegram публикация: {'Включена' if telegram_enabled else 'Отключена'}")
+    logger.info(f"BeSoccer парсер: {'Доступен (Playwright)' if BESOCCER_AVAILABLE else 'Недоступен'}")
     
     logger.info("-" * 70)
     
     # Получаем новости из всех источников
     all_news = []
     
+    # Football.ua (синхронно)
     logger.info(f"Получаем новости Football.ua с {format_kiev_time(filter_time)} (Киев)...")
-    football_ua_news = get_latest_news(since_time=filter_time)
-    if football_ua_news:
-        logger.info(f"Football.ua: найдено {len(football_ua_news)} новостей")
-        for news in football_ua_news:
-            news['source'] = 'Football.ua'
-        all_news.extend(football_ua_news)
-    else:
-        logger.info("Football.ua: новостей не найдено")
-    
-    logger.info(f"Получаем новости BeSoccer с {format_kiev_time(filter_time)} (Киев)...")
     try:
-        besoccer_news = await get_besoccer_news(since_time=filter_time)
-        if besoccer_news:
-            logger.info(f"BeSoccer: найдено {len(besoccer_news)} новостей")
-            all_news.extend(besoccer_news)
+        football_ua_news = await asyncio.to_thread(get_latest_news, since_time=filter_time)
+        if football_ua_news:
+            logger.info(f"Football.ua: найдено {len(football_ua_news)} новостей")
+            for news in football_ua_news:
+                news['source'] = 'Football.ua'
+            all_news.extend(football_ua_news)
         else:
-            logger.info("BeSoccer: новостей не найдено")
+            logger.info("Football.ua: новостей не найдено")
     except Exception as e:
-        logger.error(f"Ошибка получения новостей BeSoccer: {e}")
+        logger.error(f"Ошибка получения новостей Football.ua: {e}")
+    
+    # BeSoccer (асинхронно)
+    besoccer_news = await get_besoccer_news_safely(filter_time)
+    all_news.extend(besoccer_news)
     
     if not all_news:
         logger.info("Новостей с всех источников не найдено")
@@ -122,6 +156,7 @@ async def main():
     
     logger.info(f"Всего найдено {len(all_news)} новостей")
     
+    # Статистика по источникам
     sources_stats = {}
     for article in all_news:
         source = article.get('source', 'Unknown')
@@ -142,7 +177,8 @@ async def main():
         source = article.get('source', 'Unknown')
         title = article.get('title', '')[:50]
         time_str = format_kiev_time(article.get('publish_time')) if article.get('publish_time') else 'время неизвестно'
-        logger.info(f"{'Новая' if article in filtered_news else 'Уже опубликована'} ({source}): {title}... ({time_str})")
+        status = 'Новая' if article in filtered_news else 'Уже опубликована'
+        logger.info(f"{status} ({source}): {title}... ({time_str})")
     
     if not filtered_news:
         logger.info("Все новости уже были опубликованы")
@@ -150,6 +186,7 @@ async def main():
     
     logger.info(f"К обработке: {len(filtered_news)} уникальных новостей")
     
+    # Сортируем по времени публикации
     filtered_news.sort(key=lambda x: x.get('publish_time') or datetime.min.replace(tzinfo=KIEV_TZ), reverse=True)
     
     # Параллельная обработка новостей
@@ -181,8 +218,19 @@ async def main():
         logger.info(f"НОВОСТЬ {i} [{source}]")
         logger.info("-" * 50)
         logger.info(f"Текст для публикации:\n{article.get('post_text', article.get('title', ''))}")
-        logger.info(f"Изображение: {'✅ ' + os.path.basename(article['image_path']) if article.get('image_path') else '🔗 ' + article.get('image_url', '')[:50] + '...' if article.get('image_url') else '❌'}")
+        
+        if article.get('image_path'):
+            image_info = f"✅ {os.path.basename(article['image_path'])}"
+        elif article.get('image_url'):
+            image_info = f"🔗 {article.get('image_url', '')[:50]}..."
+        else:
+            image_info = "❌"
+        
+        logger.info(f"Изображение: {image_info}")
         logger.info("=" * 50)
+    
+    # Инициализируем переменную для scope
+    articles_to_publish = []
     
     # Публикация в Telegram
     if telegram_enabled and valid_articles:
@@ -196,8 +244,10 @@ async def main():
         
         for i, article in enumerate(valid_articles, 1):
             source = article.get('source', 'Unknown')
-            logger.info(f"Проверяем новость {i}/{len(valid_articles)} [{source}]: {article.get('title', '')[:50]}...")
-            logger.info(f"{'Уникальный контент' if article in articles_to_publish else 'Дубликат обнаружен'}")
+            title = article.get('title', '')[:50]
+            status = 'Уникальный контент' if article in articles_to_publish else 'Дубликат обнаружен'
+            logger.info(f"Проверяем новость {i}/{len(valid_articles)} [{source}]: {title}...")
+            logger.info(f"{status}")
         
         if articles_to_publish:
             logger.info("ПУБЛИКАЦИЯ В TELEGRAM")
@@ -224,6 +274,7 @@ async def main():
                     
                     logger.info(f"ПУБЛИКАЦИЯ ЗАВЕРШЕНА: {successful_posts}/{len(articles_to_publish)} успешно")
                     
+                    # Статистика опубликованных
                     published_sources = {}
                     for article in articles_to_publish[:successful_posts]:
                         source = article.get('source', 'Unknown')
@@ -241,7 +292,10 @@ async def main():
     
     else:
         logger.info("ПУБЛИКАЦИЯ В TELEGRAM ОТКЛЮЧЕНА")
-        logger.info("Для включения проверьте переменные окружения и настройки бота")
+        if not telegram_enabled:
+            logger.info("Для включения проверьте переменные окружения и настройки бота")
+        if not valid_articles:
+            logger.info("Нет обработанных новостей для публикации")
     
     # Сохранение результатов
     try:
@@ -253,8 +307,9 @@ async def main():
             'sources_found': sources_stats,
             'total_new_articles': len(filtered_news),
             'total_processed': len(valid_articles),
-            'articles_to_publish': len(articles_to_publish) if telegram_enabled else 0,
+            'articles_to_publish': len(articles_to_publish),
             'telegram_enabled': telegram_enabled,
+            'besoccer_available': BESOCCER_AVAILABLE,
             'articles': valid_articles
         }
         with open('processed_news.json', 'w', encoding='utf-8') as f:
@@ -264,7 +319,9 @@ async def main():
         logger.error(f"Не удалось сохранить результаты: {e}")
     
     # Финальная статистика
+    logger.info("=" * 70)
     logger.info("ФИНАЛЬНАЯ СТАТИСТИКА")
+    logger.info("=" * 70)
     logger.info(f"Фильтр времени: с {format_kiev_time(filter_time)} (Киев)")
     logger.info(f"Найдено новых: {len(all_news)}")
     logger.info("По источникам:")
@@ -277,6 +334,7 @@ async def main():
     logger.info(f"С изображениями: {sum(1 for a in valid_articles if a.get('image_path') or a.get('image_url'))}")
     logger.info(f"С AI резюме: {'Да' if has_gemini_key() else 'Нет'}")
     logger.info(f"С переводом BeSoccer: {'Да' if has_gemini_key() else 'Нет'}")
+    logger.info(f"BeSoccer парсер: {'Доступен (Playwright)' if BESOCCER_AVAILABLE else 'Недоступен'}")
     logger.info(f"Telegram публикация: {'Включена' if telegram_enabled else 'Отключена'}")
     logger.info(f"Время выполнения: {format_kiev_time(current_time_kiev)} (Киев)")
     logger.info("Работа завершена!")
