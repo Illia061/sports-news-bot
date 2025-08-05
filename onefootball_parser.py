@@ -4,6 +4,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 import logging
 import random
+from ai_processor import create_enhanced_summary, download_image
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -23,21 +24,50 @@ CONFIG = {
 KIEV_TZ = ZoneInfo("Europe/Kiev")
 
 def parse_publish_time(time_str: str) -> datetime:
-    """Преобразует строку времени в объект datetime с киевским часовым поясом."""
+    """Преобразует строку времени в объект datetime с киевским часовым поясом (EEST)."""
     try:
-        dt = datetime.strptime(time_str, '%Y-%m-%d %H:%M %Z')
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=ZoneInfo("Europe/Kiev"))
-        return dt.astimezone(KIEV_TZ)
+        # Предполагаем формат вроде '2025-08-05T14:30:00Z' или '2025-08-05 14:30 EEST'
+        if 'T' in time_str:
+            dt = datetime.fromisoformat(time_str.replace('Z', '+00:00')).astimezone(KIEV_TZ)
+        else:
+            dt = datetime.strptime(time_str, '%Y-%m-%d %H:%M %Z').astimezone(KIEV_TZ)
+        return dt
     except Exception as e:
         logger.warning(f"Ошибка парсинга времени '{time_str}': {e}")
         return datetime.now(KIEV_TZ)
 
+def fetch_full_article(url: str) -> tuple[str, str]:
+    """Извлекает полный текст и изображение из статьи."""
+    try:
+        headers = {'User-Agent': random.choice(CONFIG['USER_AGENTS'])}
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, 'html.parser')
+
+        # Извлечение текста
+        content_div = soup.select_one('.article-content, .post-content, [class*="body"]')
+        if not content_div:
+            paragraphs = soup.find_all('p')
+            article_text = ' '.join(p.get_text(strip=True) for p in paragraphs)
+        else:
+            for unwanted in content_div.find_all(['script', 'style', 'iframe']):
+                unwanted.decompose()
+            article_text = content_div.get_text(strip=True)
+
+        # Извлечение изображения
+        img_elem = soup.select_one('.article-image img, .featured-image img, [class*="image"] img')
+        image_url = img_elem['src'] if img_elem and 'src' in img_elem.attrs else ''
+
+        return article_text, image_url
+    except Exception as e:
+        logger.error(f"Ошибка загрузки статьи {url}: {e}")
+        return "", ""
+
 def get_latest_news(since_time: datetime = None) -> list:
-    """Получает последние новости с OneFootball."""
+    """Получает последние новости с OneFootball с фильтрацией по времени и обработкой статей."""
     logger.info("Получение новостей с OneFootball...")
     news_items = []
-    
+
     try:
         headers = {'User-Agent': random.choice(CONFIG['USER_AGENTS'])}
         response = requests.get(CONFIG['BASE_URL'], headers=headers, timeout=10)
@@ -59,29 +89,32 @@ def get_latest_news(since_time: datetime = None) -> list:
                 if url and not url.startswith('http'):
                     url = 'https://onefootball.com' + url
 
-                summary_elem = article.select_one('p, [class*="description"], [class*="summary"]')
-                summary = summary_elem.get_text(strip=True) if summary_elem else ''
-
                 time_elem = article.select_one('time, [class*="date"]')
                 publish_time = parse_publish_time(time_elem['datetime'] if time_elem and time_elem.get('datetime') else '')
-                
-                img_elem = article.select_one('img[src]')
-                image_url = img_elem['src'] if img_elem else ''
 
                 if since_time and publish_time < since_time:
                     logger.info(f"Новость '{title[:50]}...' старая, пропускаем")
                     continue
 
-                news_item = {
+                # Извлечение полного текста и изображения
+                article_text, image_url = fetch_full_article(url)
+                translated_title = create_enhanced_summary({
                     'title': title,
+                    'content': title,
                     'url': url,
-                    'summary': summary,
+                    'source': 'OneFootball'
+                }).strip()
+
+                news_item = {
+                    'title': translated_title,
+                    'url': url,
+                    'content': article_text,
                     'publish_time': publish_time,
                     'image_url': image_url,
                     'source': 'OneFootball'
                 }
                 news_items.append(news_item)
-                logger.info(f"Добавлена новость: {title[:50]}...")
+                logger.info(f"Добавлена новость: {translated_title[:50]}...")
             except Exception as e:
                 logger.error(f"Ошибка обработки новости: {e}")
                 continue
