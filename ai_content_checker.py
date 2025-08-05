@@ -195,7 +195,7 @@ class TelegramChannelChecker:
         self.bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
         self.channel_id = os.getenv('TELEGRAM_CHANNEL_ID')
     
-    def get_recent_posts(self, limit: int = 5) -> List[Dict[str, Any]]:
+    def get_recent_posts(self, limit: int = 5, since_time: Optional[datetime] = None) -> List[Dict[str, Any]]:
         """Получает последние посты из канала (увеличиваем лимит для новой логики)"""
         if not self.bot_token or not self.channel_id:
             print("❌ Telegram настройки не найдены")
@@ -229,10 +229,11 @@ class TelegramChannelChecker:
             formatted_posts = []
             for post in recent_posts:
                 text = post.get('text') or post.get('caption', '') or ''
-                if text:  # Убрали фильтр на длину для теста
+                post_date = datetime.fromtimestamp(post.get('date', 0))
+                if text and (not since_time or post_date >= since_time):  # Фильтр по времени
                     formatted_posts.append({
                         'text': text,
-                        'date': datetime.fromtimestamp(post.get('date', 0)),
+                        'date': post_date,
                         'message_id': post.get('message_id')
                     })
         
@@ -243,12 +244,13 @@ class TelegramChannelChecker:
             print(f"❌ Ошибка получения постов из канала: {e}")
             return []
 
-def check_content_similarity(new_article: Dict[str, Any], threshold: float = 0.7) -> bool:
+def check_content_similarity(new_article: Dict[str, Any], threshold: float = 0.7, since_time: Optional[datetime] = None) -> bool:
     """
     AI-проверка похожести контента
     
     :param new_article: Новая статья для проверки
     :param threshold: Порог похожести (0.0-1.0)
+    :param since_time: Время, начиная с которого проверять дубликаты (опционально)
     :return: True если контент похож (нужно пропустить), False если уникален (можно публиковать)
     """
     print(f"🔍 AI проверка дубликатов: {new_article.get('title', '')[:50]}...")
@@ -263,8 +265,8 @@ def check_content_similarity(new_article: Dict[str, Any], threshold: float = 0.7
         print("⚠️ Новая статья не содержит текста")
         return False
     
-    # Получаем последние посты из канала (больше постов для сравнения)
-    recent_posts = channel_checker.get_recent_posts(limit=5)
+    # Получаем последние посты из канала с фильтром по времени
+    recent_posts = channel_checker.get_recent_posts(limit=5, since_time=since_time)
     
     if not recent_posts:
         print("✅ Не удалось получить недавние посты - публикуем")
