@@ -5,7 +5,7 @@ import asyncio
 import logging
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from parser import get_latest_news as get_football_ua_news
 from onefootball_parser import get_latest_news as get_onefootball_news
@@ -84,7 +84,7 @@ async def main():
     telegram_enabled = TELEGRAM_AVAILABLE and debug_environment()
     logger.info(f"Telegram публикация: {'включена' if telegram_enabled else 'отключена'}")
 
-    # Получение новостей из источников
+    # Получение новостей
     all_news = []
     sources = [
         ("Football.ua", get_football_ua_news),
@@ -99,16 +99,15 @@ async def main():
         logger.info("Новостей не найдено")
         return
 
-    sources_stats = {}
+    sources_stats = {article.get('source', 'Unknown'): 0 for article in all_news}
     for article in all_news:
-        source = article.get('source', 'Unknown')
-        sources_stats[source] = sources_stats.get(source, 0) + 1
+        sources_stats[article.get('source', 'Unknown')] += 1
 
     logger.info("Статистика по источникам:")
     for source, count in sources_stats.items():
         logger.info(f"   {source}: {count} новостей")
 
-    # Фильтрация уже опубликованных новостей
+    # Фильтрация уже опубликованных
     filtered_news = [article for article in all_news if not is_already_posted(article.get('title', ''))]
     if not filtered_news:
         logger.info("Все новости уже опубликованы")
@@ -123,46 +122,38 @@ async def main():
         return_exceptions=True
     )
 
-    valid_articles = []
-    for i, result in enumerate(processed_articles):
-        if isinstance(result, Exception):
-            logger.error(f"Ошибка обработки новости {i+1}: {result}")
-            continue
-        valid_articles.append(result)
+    valid_articles = [result for result in processed_articles if not isinstance(result, Exception)]
+    for i, result in enumerate(valid_articles, 1):
         logger.info(f"Обработано [{result.get('source')}]: {result.get('title', '')[:50]}...")
 
-    # Публикация в Telegram
-    if telegram_enabled and valid_articles:
-        logger.info("Проверка на дубликаты и публикация")
-        articles_to_publish = [
-            article for article in valid_articles
-            if not check_content_similarity(article, threshold=0.7)
-        ]
+    # Проверка на дубликаты за сегодня
+    today_start = current_time_kiev.replace(hour=0, minute=0, second=0, microsecond=0)
+    articles_to_publish = [
+        article for article in valid_articles
+        if not check_content_similarity(article, threshold=0.7, since_time=today_start)
+    ]
 
-        if articles_to_publish:
-            try:
-                poster = TelegramPosterSync()
-                if poster.test_connection():
-                    successful_posts = 0
-                    for i, article in enumerate(articles_to_publish):
-                        logger.info(f"Публикуем [{article.get('source')}]: {article.get('title', '')[:50]}...")
-                        if await post_with_timeout(poster, article):
-                            successful_posts += 1
-                            save_posted(article.get('title', ''))
-                            logger.info("Успешно опубликовано")
-                        else:
-                            logger.error("Не удалось опубликовать")
-                        if i < len(articles_to_publish) - 1:
-                            await asyncio.sleep(CONFIG['POST_INTERVAL'])
-                    logger.info(f"Опубликовано: {successful_posts}/{len(articles_to_publish)}")
-                else:
-                    logger.error("Не удалось подключиться к Telegram")
-            except Exception as e:
-                logger.error(f"Ошибка публикации: {e}")
-        else:
-            logger.info("Нет новостей для публикации: все дубликаты")
+    if telegram_enabled and articles_to_publish:
+        logger.info("Публикация в Telegram")
+        try:
+            poster = TelegramPosterSync()
+            if poster.test_connection():
+                successful_posts = 0
+                for i, article in enumerate(articles_to_publish):
+                    logger.info(f"Публикуем [{article.get('source')}]: {article.get('title', '')[:50]}...")
+                    if await post_with_timeout(poster, article):
+                        successful_posts += 1
+                        save_posted(article.get('title', ''))
+                        logger.info("Успешно опубликовано")
+                    if i < len(articles_to_publish) - 1:
+                        await asyncio.sleep(CONFIG['POST_INTERVAL'])
+                logger.info(f"Опубликовано: {successful_posts}/{len(articles_to_publish)}")
+            else:
+                logger.error("Не удалось подключиться к Telegram")
+        except Exception as e:
+            logger.error(f"Ошибка публикации: {e}")
     else:
-        logger.info("Публикация отключена или нет обработанных новостей")
+        logger.info("Публикация отключена или нет новостей для публикации")
 
     # Сохранение результатов
     output_data = {
@@ -177,17 +168,17 @@ async def main():
         import json
         with open('processed_news.json', 'w', encoding='utf-8') as f:
             json.dump(output_data, f, ensure_ascii=False, indent=2)
-        logger.info("Результаты сохранены в processed_news.json")
+        logger.info("Результаты сохранены")
     except Exception as e:
-        logger.error(f"Не удалось сохранить результаты: {e}")
+        logger.error(f"Ошибка сохранения: {e}")
 
-    logger.info(f"Работа завершена: обработано {len(valid_articles)} новостей, опубликовано {len(articles_to_publish) if telegram_enabled else 0}")
+    logger.info(f"Завершено: обработано {len(valid_articles)}, опубликовано {len(articles_to_publish)}")
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Программа остановлена пользователем")
+        logger.info("Остановлено пользователем")
         sys.exit(0)
     except Exception as e:
         logger.error(f"Критическая ошибка: {e}", exc_info=True)
