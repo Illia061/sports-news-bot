@@ -103,6 +103,18 @@ def get_latest_news(since_time: datetime = None) -> list:
             return []
 
         current_time = datetime.now(KIEV_TZ)
+        # Определение since_time по умолчанию
+        if since_time is None:
+            current_hour = current_time.hour
+            current_minute = current_time.minute
+            # Диапазон 5:50 - 6:10 утра
+            if 5 <= current_hour < 6 and current_minute >= 50 or current_hour == 6 and current_minute <= 10:
+                since_time = current_time.replace(hour=1, minute=0, second=0, microsecond=0)
+                logger.info(f"Режим 5 часов: since_time установлено на {since_time}")
+            else:
+                since_time = current_time - timedelta(minutes=20)
+                logger.info(f"Режим 20 минут: since_time установлено на {since_time}")
+
         for article in news_container[:CONFIG['MAX_NEWS']]:
             try:
                 title_elem = article.select_one('h3, [class*="title"]')
@@ -122,7 +134,7 @@ def get_latest_news(since_time: datetime = None) -> list:
 
                 publish_time = parse_publish_time(time_str, current_time)
 
-                if since_time and publish_time < since_time:
+                if publish_time < since_time:
                     logger.info(f"Новость '{title[:50]}...' старая, пропускаем (publish_time={publish_time}, since_time={since_time})")
                     continue
 
@@ -154,7 +166,7 @@ def get_latest_news(since_time: datetime = None) -> list:
                     'image_url': image_url,
                     'source': 'OneFootball'
                 }
-                news_items.append(newitem)
+                news_items.append(news_item)
                 logger.info(f"Добавлена новость: {translated_title[:50]}...")
             except Exception as e:
                 logger.error(f"Ошибка обработки новости: {e}")
@@ -166,4 +178,3 @@ def get_latest_news(since_time: datetime = None) -> list:
     except Exception as e:
         logger.error(f"Ошибка получения новостей с OneFootball: {e}")
         return []
-
