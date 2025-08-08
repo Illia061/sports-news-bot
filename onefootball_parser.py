@@ -18,7 +18,7 @@ CONFIG = {
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0'
     ],
     'BASE_URL': 'https://onefootball.com/en/home',
-    'MAX_NEWS': 20
+    'MAX_NEWS': 10
 }
 
 KIEV_TZ = ZoneInfo("Europe/Kiev")
@@ -96,14 +96,31 @@ def get_latest_news(since_time: datetime = None) -> list:
                     logger.info(f"Новость '{title[:50]}...' старая, пропускаем")
                     continue
 
-                # Извлечение полного текста и изображения
+                # Попытка взять миниатюру с превью-страницы (чтобы снизить риск перепутать изображения)
+                thumb_img = article.select_one('img')
+                thumb_url = ''
+                if thumb_img and thumb_img.get('src'):
+                    thumb_url = thumb_img['src']
+                    if thumb_url and not thumb_url.startswith('http'):
+                        thumb_url = 'https://onefootball.com' + thumb_url
+
+                # Извлечение полного текста и изображения (если в статье не будет картинки, используем миниатюру)
                 article_text, image_url = fetch_full_article(url)
+                if not image_url and thumb_url:
+                    image_url = thumb_url
                 translated_title = create_enhanced_summary({
                     'title': title,
-                    'content': title,
+                    'content': article_text,
                     'url': url,
                     'source': 'OneFootball'
                 }).strip()
+
+                # Удаляем markdown-выделение ** вокруг подзаголовков, если AI вернул их
+                if translated_title.startswith('**') and translated_title.endswith('**'):
+                    translated_title = translated_title.strip('* ').strip()
+                # Также чистим контент от остаточных '**'
+                if article_text:
+                    article_text = article_text.replace('**', '')
 
                 news_item = {
                     'title': translated_title,
@@ -125,3 +142,4 @@ def get_latest_news(since_time: datetime = None) -> list:
     except Exception as e:
         logger.error(f"Ошибка получения новостей с OneFootball: {e}")
         return []
+
