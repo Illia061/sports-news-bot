@@ -202,7 +202,7 @@ class TelegramChannelChecker:
             return []
     
         try:
-            url = f"https://api.telegram.org/bot{self.bot_token}/getUpdates"
+            url = f"https://api.telegram.org/bot{self.bot_token}/getChatHistory"
             params = {
                 'limit': 100,
                 'offset': -100
