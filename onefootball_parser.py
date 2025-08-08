@@ -1,6 +1,6 @@
 import requests
 from bs4 import BeautifulSoup
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import logging
 import random
@@ -23,18 +23,41 @@ CONFIG = {
 
 KIEV_TZ = ZoneInfo("Europe/Kiev")
 
-def parse_publish_time(time_str: str) -> datetime:
-    """Преобразует строку времени в объект datetime с киевским часовым поясом (EEST)."""
+def parse_publish_time(time_str: str, current_time: datetime = None) -> datetime:
+    """Преобразует строку времени в объект datetime с киевским часовым поясом (EEST).
+    Поддерживает относительное время (например, '15 minutes ago') и ISO формат."""
     try:
-        # Предполагаем формат вроде '2025-08-05T14:30:00Z' или '2025-08-05 14:30 EEST'
+        if not current_time:
+            current_time = datetime.now(KIEV_TZ)
+        logger.debug(f"Попытка парсинга времени: {time_str}, текущее время: {current_time}")
+
+        # Проверка на относительное время (например, '15 minutes ago')
+        if 'ago' in time_str.lower():
+            for unit in ['minutes', 'hours', 'days']:
+                if unit in time_str.lower():
+                    value = int(''.join(filter(str.isdigit, time_str)))
+                    if unit == 'minutes':
+                        delta = timedelta(minutes=value)
+                    elif unit == 'hours':
+                        delta = timedelta(hours=value)
+                    elif unit == 'days':
+                        delta = timedelta(days=value)
+                    return current_time - delta
+            raise ValueError("Не удалось распознать относительное время")
+
+        # Проверка на ISO формат (например, '2025-08-08T18:02:00Z')
         if 'T' in time_str:
             dt = datetime.fromisoformat(time_str.replace('Z', '+00:00')).astimezone(KIEV_TZ)
         else:
-            dt = datetime.strptime(time_str, '%Y-%m-%d %H:%M %Z').astimezone(KIEV_TZ)
+            try:
+                dt = datetime.strptime(time_str, '%Y-%m-%d %H:%M %Z').astimezone(KIEV_TZ)
+            except ValueError:
+                dt = datetime.strptime(time_str, '%Y-%m-%d %H:%M').replace(tzinfo=KIEV_TZ)
+        logger.debug(f"Успешно распарсено время: {time_str} -> {dt}")
         return dt
     except Exception as e:
         logger.warning(f"Ошибка парсинга времени '{time_str}': {e}")
-        return datetime.now(KIEV_TZ)
+        return current_time  # Возвращаем текущее время в случае ошибки
 
 def fetch_full_article(url: str) -> tuple[str, str]:
     """Извлекает полный текст и изображение из статьи."""
@@ -79,6 +102,7 @@ def get_latest_news(since_time: datetime = None) -> list:
             logger.warning("Контейнер новостей не найден")
             return []
 
+        current_time = datetime.now(KIEV_TZ)
         for article in news_container[:CONFIG['MAX_NEWS']]:
             try:
                 title_elem = article.select_one('h3, [class*="title"]')
@@ -90,21 +114,23 @@ def get_latest_news(since_time: datetime = None) -> list:
                     url = 'https://onefootball.com' + url
 
                 time_elem = article.select_one('time, [class*="date"]')
-                publish_time = parse_publish_time(time_elem['datetime'] if time_elem and time_elem.get('datetime') else '')
+                time_str = time_elem['datetime'] if time_elem and 'datetime' in time_elem.attrs else ''
+                if not time_str:  # Если datetime отсутствует, попробуем извлечь из текста
+                    time_text = time_elem.get_text(strip=True) if time_elem else ''
+                    time_str = time_text if time_text else str(current_time)
+                logger.debug(f"Извлечено время новости: {time_str}")
+
+                publish_time = parse_publish_time(time_str, current_time)
 
                 if since_time and publish_time < since_time:
-                    logger.info(f"Новость '{title[:50]}...' старая, пропускаем")
+                    logger.info(f"Новость '{title[:50]}...' старая, пропускаем (publish_time={publish_time}, since_time={since_time})")
                     continue
 
-                # Попытка взять миниатюру с превью-страницы (чтобы снизить риск перепутать изображения)
                 thumb_img = article.select_one('img')
-                thumb_url = ''
-                if thumb_img and thumb_img.get('src'):
-                    thumb_url = thumb_img['src']
-                    if thumb_url and not thumb_url.startswith('http'):
-                        thumb_url = 'https://onefootball.com' + thumb_url
+                thumb_url = thumb_img['src'] if thumb_img and 'src' in thumb_img.attrs else ''
+                if thumb_url and not thumb_url.startswith('http'):
+                    thumb_url = 'https://onefootball.com' + thumb_url
 
-                # Извлечение полного текста и изображения (если в статье не будет картинки, используем миниатюру)
                 article_text, image_url = fetch_full_article(url)
                 if not image_url and thumb_url:
                     image_url = thumb_url
@@ -115,10 +141,8 @@ def get_latest_news(since_time: datetime = None) -> list:
                     'source': 'OneFootball'
                 }).strip()
 
-                # Удаляем markdown-выделение ** вокруг подзаголовков, если AI вернул их
                 if translated_title.startswith('**') and translated_title.endswith('**'):
                     translated_title = translated_title.strip('* ').strip()
-                # Также чистим контент от остаточных '**'
                 if article_text:
                     article_text = article_text.replace('**', '')
 
@@ -130,7 +154,7 @@ def get_latest_news(since_time: datetime = None) -> list:
                     'image_url': image_url,
                     'source': 'OneFootball'
                 }
-                news_items.append(news_item)
+                news_items.append(newitem)
                 logger.info(f"Добавлена новость: {translated_title[:50]}...")
             except Exception as e:
                 logger.error(f"Ошибка обработки новости: {e}")
