@@ -9,7 +9,6 @@ from zoneinfo import ZoneInfo
 import google.generativeai as genai
 import logging
 import os
-from playwright.sync_api import sync_playwright
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -47,42 +46,30 @@ class OneFootballParser:
         except Exception as e:
             logger.error(f"Ошибка инициализации Gemini: {e}")
 
-    def get_page_content(self, url: str, use_playwright: bool = False) -> Optional[BeautifulSoup]:
-        """Получает содержимое страницы, с опцией использования Playwright для динамического контента."""
-        if use_playwright:
-            try:
-                with sync_playwright() as p:
-                    browser = p.chromium.launch()
-                    page = browser.new_page()
-                    page.goto(url, wait_until="networkidle")
-                    content = page.content()
-                    browser.close()
-                    return BeautifulSoup(content, "html.parser")
-            except Exception as e:
-                logger.error(f"Ошибка загрузки {url} через Playwright: {e}")
-                return None
-        else:
-            try:
-                response = self.session.get(url, timeout=15)
-                response.raise_for_status()
-                return BeautifulSoup(response.text, "html.parser")
-            except Exception as e:
-                logger.error(f"Ошибка загрузки {url}: {e}")
-                return None
+    def get_page_content(self, url: str) -> Optional[BeautifulSoup]:
+        """Получает содержимое страницы через статический парсинг."""
+        try:
+            response = self.session.get(url, timeout=15)
+            response.raise_for_status()
+            with open('onefootball_static.html', 'w', encoding='utf-8') as f:
+                f.write(response.text)  # Сохраняем HTML для анализа
+            return BeautifulSoup(response.text, "html.parser")
+        except Exception as e:
+            logger.error(f"Ошибка загрузки {url}: {e}")
+            return None
 
     def find_top_news_section(self, soup: BeautifulSoup) -> Optional[BeautifulSoup]:
         """Находит секцию с верхними новостями."""
         possible_selectors = [
-            '.news-list',
-            '.article-list',
-            '.latest-news',
-            '[class*="news"]',
-            '[class*="articles"]',
-            '.feed',
-            '.content-feed',
-            '[data-type="article-list"]',
+            '.of-feed',
+            '[data-testid="feed"]',
             '.news-feed',
             '.latest-articles',
+            '.article-feed',
+            '[data-testid="news-list"]',
+            '[class*="feed"]',
+            '[class*="news"]',
+            '[class*="articles"]',
         ]
 
         for selector in possible_selectors:
@@ -95,6 +82,8 @@ class OneFootballParser:
         all_divs = soup.find_all('div', class_=True)
         for div in all_divs:
             class_str = str(div.get('class', ''))
+            if any(bad in class_str.lower() for bad in ['banner', 'promo', 'advert', 'sponsored']):
+                continue  # Пропускаем рекламные блоки
             if re.search(r'news|articles|feed|latest|content', class_str, re.I):
                 logger.info(f"✅ Найден блок новостей через анализ структуры: {class_str}")
                 return div
@@ -267,7 +256,7 @@ class OneFootballParser:
         url = news_item['url']
         logger.info(f"📖 Загружаем статью: {url}")
 
-        soup = self.get_page_content(url, use_playwright=True)
+        soup = self.get_page_content(url)
         if not soup:
             logger.error(f"❌ Не удалось загрузить статью: {url}")
             return None
@@ -301,11 +290,7 @@ class OneFootballParser:
 
         logger.info(f"🔍 Загружаем главную страницу OneFootball... (с {since_time.strftime('%H:%M %d.%m.%Y')})")
 
-        # Сначала пробуем с Playwright для динамического контента
-        soup = self.get_page_content(self.base_url, use_playwright=True)
-        if not soup:
-            logger.warning("Playwright не сработал, пробуем статический парсинг")
-            soup = self.get_page_content(self.base_url, use_playwright=False)
+        soup = self.get_page_content(self.base_url)
         if not soup:
             logger.error("❌ Не удалось загрузить главную страницу")
             return []
