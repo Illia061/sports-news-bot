@@ -1,3 +1,4 @@
+
 import re
 import os
 import requests
@@ -5,14 +6,15 @@ import time
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 import google.generativeai as genai
+from cachetools import TTLCache
+import difflib
 
-# Используем настройки AI из ai_processor
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_AVAILABLE = False
 model = None
 
 def init_gemini():
-    """Инициализирует клиента Gemini"""
+    """Инициализирует клиента Gemini."""
     global GEMINI_AVAILABLE, model
     if not GEMINI_API_KEY:
         print("⚠️ GEMINI_API_KEY не найден - используем базовую проверку дубликатов")
@@ -30,63 +32,56 @@ def has_gemini_key() -> bool:
         init_gemini()
     return GEMINI_AVAILABLE
 
+def clean_text_for_ai(text: str) -> str:
+    """Очищает текст для AI-анализа."""
+    if not text:
+        return ""
+    text = re.sub(r'<[^>]+>', '', text)
+    text = re.sub(r'\s*#\w+\s*', ' ', text)
+    text = re.sub(r'[⚽🏆🥅📰📊🔥💪👑🎯⭐🚫✅❌🌍]', '', text)
+    text = re.sub(r'(ESPN Soccer|Football\.ua|OneFootball)', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    text = text.replace('**', '')
+    return text
+
 class AIContentSimilarityChecker:
-    """AI-проверка похожести контента через Gemini"""
+    """AI-проверка похожести контента через Gemini."""
     
     def __init__(self, similarity_threshold: float = 0.7):
-        """
-        :param similarity_threshold: Порог похожести (0.0-1.0)
-        """
         self.similarity_threshold = similarity_threshold
         if not has_gemini_key():
             print("⚠️ AI недоступен - будет использована базовая проверка")
     
-    def clean_text_for_ai(self, text: str) -> str:
-        """Очищает текст для AI анализа"""
-        if not text:
-            return ""
-        
-        # Убираем HTML теги
-        text = re.sub(r'<[^>]+>', '', text)
-        
-        # Убираем хештеги (но оставляем основной текст)
-        text = re.sub(r'\s*#\w+\s*', ' ', text)
-        
-        # Убираем лишние символы и эмодзи
-        text = re.sub(r'[⚽🏆🥅📰📊🔥💪👑🎯⭐🚫✅❌]', '', text)
-        
-        # Убираем лишние пробелы
-        text = re.sub(r'\s+', ' ', text).strip()
-        
-        return text
-    
-    def ai_compare_texts(self, new_text: str, existing_texts: List[str]) -> Dict[str, Any]:
-        """Использует AI для сравнения текстов"""
+    def ai_compare_texts(self, new_text: str, existing_texts: List[str], batch_size: int = 5) -> Dict[str, Any]:
+        """Использует AI для сравнения текстов в пакетном режиме."""
         if not has_gemini_key() or not model:
             return {"ai_available": False, "similarities": [], "is_duplicate": False}
         
-        # Очищаем тексты
-        clean_new_text = self.clean_text_for_ai(new_text)
-        clean_existing_texts = [self.clean_text_for_ai(text) for text in existing_texts]
+        clean_new_text = clean_text_for_ai(new_text)
+        clean_existing_texts = [clean_text_for_ai(text) for text in existing_texts]
         
         if not clean_new_text or not any(clean_existing_texts):
             return {"ai_available": True, "similarities": [], "is_duplicate": False}
         
-        # Формируем промпт для AI
-        existing_texts_formatted = ""
-        for i, text in enumerate(clean_existing_texts, 1):
-            if text:  # Только непустые тексты
-                existing_texts_formatted += f"\nТекст {i}: {text}\n"
+        similarities = []
+        is_duplicate = False
+        max_similarity = 0
         
-        if not existing_texts_formatted:
-            return {"ai_available": True, "similarities": [], "is_duplicate": False}
-        
-        prompt = f"""Ты експерт з аналізу футбольних новин. Твоє завдання - визначити чи є нова новина дублікатом існуючих.
+        for i in range(0, len(clean_existing_texts), batch_size):
+            batch_texts = clean_existing_texts[i:i + batch_size]
+            if not batch_texts:
+                continue
+            
+            existing_texts_formatted = "\n".join(f"Текст {j+1}: {text}" for j, text in enumerate(batch_texts) if text)
+            if not existing_texts_formatted:
+                continue
+            
+            prompt = f"""Ти експерт з аналізу футбольних новин. Твоє завдання - визначити чи є нова новина дублікатом існуючих.
 
 НОВА НОВИНА:
 {clean_new_text}
 
-ІСНУЮЧІ НОВИНИ З КАНАЛУ:{existing_texts_formatted}
+ІСНУЮЧІ НОВИНИ:{existing_texts_formatted}
 
 ЗАВДАННЯ:
 1. Порівняй нову новину з кожною існуючою
@@ -114,103 +109,85 @@ class AIContentSimilarityChecker:
 ВИСНОВОК: [ТАК/НІ] - [обґрунтування]
 
 Будь точним та обґрунтованим у своєму аналізі."""
-
-        try:
-            print(f"🤖 Відправляю {len(clean_new_text)} символів на AI аналіз дублікатів...")
-            response = model.generate_content(prompt)
-            ai_response = response.text.strip()
             
-            print(f"🤖 AI відповідь отримана: {len(ai_response)} символів")
-            
-            # Парсимо відповідь AI
-            similarities = []
-            is_duplicate = False
-            
-            # Шукаємо схожості в тексті
-            similarity_pattern = r'Текст (\d+): (\d+)%'
-            matches = re.findall(similarity_pattern, ai_response)
-            
-            for match in matches:
-                text_num = int(match[0])
-                similarity_percent = int(match[1])
-                similarities.append({
-                    'text_index': text_num - 1,
-                    'similarity_percent': similarity_percent,
-                    'similarity_ratio': similarity_percent / 100.0
-                })
-            
-            # Шукаємо висновок
-            if 'ВИСНОВОК: ТАК' in ai_response.upper():
-                is_duplicate = True
-            elif 'ВИСНОВОК: НІ' in ai_response.upper():
-                is_duplicate = False
-            else:
-                # Резервна логіка - якщо схожість > 70%
-                max_similarity = max([s['similarity_percent'] for s in similarities]) if similarities else 0
-                is_duplicate = max_similarity >= (self.similarity_threshold * 100)
-            
-            return {
-                "ai_available": True,
-                "ai_response": ai_response,
-                "similarities": similarities,
-                "is_duplicate": is_duplicate,
-                "max_similarity": max([s['similarity_percent'] for s in similarities]) if similarities else 0
-            }
-            
-        except Exception as e:
-            print(f"❌ Помилка AI аналізу: {e}")
-            return {"ai_available": False, "error": str(e), "similarities": [], "is_duplicate": False}
+            try:
+                print(f"🤖 Відправляю {len(clean_new_text)} символів на AI аналіз дубликатів...")
+                response = model.generate_content(prompt)
+                ai_response = response.text.strip()
+                
+                print(f"🤖 AI відповідь отримана: {len(ai_response)} символів")
+                
+                batch_matches = re.findall(r'Текст (\d+): (\d+)%', ai_response)
+                for match in batch_matches:
+                    text_num = int(match[0]) - 1 + i
+                    similarity_percent = int(match[1])
+                    similarities.append({
+                        'text_index': text_num,
+                        'similarity_percent': similarity_percent,
+                        'similarity_ratio': similarity_percent / 100.0
+                    })
+                    max_similarity = max(max_similarity, similarity_percent)
+                
+                if 'ВИСНОВОК: ТАК' in ai_response.upper():
+                    is_duplicate = True
+                    break
+            except Exception as e:
+                print(f"❌ Помилка AI аналізу для пакета {i//batch_size + 1}: {e}")
+                continue
+        
+        return {
+            "ai_available": True,
+            "ai_response": ai_response if 'ai_response' in locals() else "",
+            "similarities": similarities,
+            "is_duplicate": is_duplicate,
+            "max_similarity": max_similarity
+        }
     
     def fallback_similarity_check(self, text1: str, text2: str) -> float:
-        """Резервная проверка похожести без AI"""
+        """Резервная проверка похожести без AI."""
         if not text1 or not text2:
             return 0.0
         
-        # Простое сравнение ключевых слов
-        words1 = set(self.clean_text_for_ai(text1).lower().split())
-        words2 = set(self.clean_text_for_ai(text2).lower().split())
+        clean_text1 = clean_text_for_ai(text1).lower()
+        clean_text2 = clean_text_for_ai(text2).lower()
         
-        if not words1 or not words2:
-            return 0.0
+        matcher = difflib.SequenceMatcher(None, clean_text1, clean_text2)
+        similarity = matcher.ratio()
         
-        # Фильтруем стоп-слова
-        stop_words = {'в', 'на', 'за', 'до', 'від', 'для', 'про', 'під', 'над', 'при', 'з', 'у', 'і', 'та', 'або', 'але'}
-        words1 = {w for w in words1 if len(w) > 2 and w not in stop_words}
-        words2 = {w for w in words2 if len(w) > 2 and w not in stop_words}
+        key_terms = {'шахтар', 'динамо', 'реал', 'барселона', 'мбаппе', 'роналду'}
+        words1 = set(clean_text1.split())
+        words2 = set(clean_text2.split())
+        common_key_terms = key_terms.intersection(words1).intersection(words2)
         
-        if not words1 or not words2:
-            return 0.0
-        
-        # Вычисляем пересечение
-        common_words = words1.intersection(words2)
-        similarity = len(common_words) / max(len(words1), len(words2))
+        if common_key_terms:
+            similarity = min(1.0, similarity + 0.2)
         
         return similarity
 
-
 class TelegramChannelChecker:
-    """Класс для получения последних сообщений из Telegram канала"""
+    """Класс для получения последних сообщений из Telegram канала."""
     
     def __init__(self):
         self.bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
         self.channel_id = os.getenv('TELEGRAM_CHANNEL_ID')
+        self.cache = TTLCache(maxsize=10, ttl=300)  # Кэш на 5 минут
     
     def get_recent_posts(self, limit: int = 5, since_time: Optional[datetime] = None) -> List[Dict[str, Any]]:
-        """Получает последние посты из канала (увеличиваем лимит для новой логики)"""
+        """Получает последние посты из канала с кэшированием."""
+        cache_key = (limit, since_time.isoformat() if since_time else None)
+        if cache_key in self.cache:
+            print("✅ Используем кэшированные посты")
+            return self.cache[cache_key]
+        
         if not self.bot_token or not self.channel_id:
             print("❌ Telegram настройки не найдены")
             return []
     
         try:
-            url = f"https://api.telegram.org/bot{self.bot_token}/getChatHistory"
-            params = {
-                'limit': 100,
-                'offset': -100
-            }
-            
+            url = f"https://api.telegram.org/bot{self.bot_token}/getUpdates"
+            params = {'limit': 100, 'offset': -100}
             response = requests.get(url, params=params, timeout=30)
             result = response.json()
-            print(f"📋 Полный ответ API: {result}")  # Для диагностики
             
             if not result.get('ok'):
                 print(f"❌ Ошибка получения обновлений: {result.get('description')}")
@@ -230,7 +207,7 @@ class TelegramChannelChecker:
             for post in recent_posts:
                 text = post.get('text') or post.get('caption', '') or ''
                 post_date = datetime.fromtimestamp(post.get('date', 0))
-                if text and (not since_time or post_date >= since_time):  # Фильтр по времени
+                if text and (not since_time or post_date >= since_time):
                     formatted_posts.append({
                         'text': text,
                         'date': post_date,
@@ -238,6 +215,7 @@ class TelegramChannelChecker:
                     })
         
             print(f"✅ Получено {len(formatted_posts)} последних постов из канала")
+            self.cache[cache_key] = formatted_posts
             return formatted_posts
     
         except Exception as e:
@@ -245,39 +223,27 @@ class TelegramChannelChecker:
             return []
 
 def check_content_similarity(new_article: Dict[str, Any], threshold: float = 0.7, since_time: Optional[datetime] = None) -> bool:
-    """
-    AI-проверка похожести контента
-    
-    :param new_article: Новая статья для проверки
-    :param threshold: Порог похожести (0.0-1.0)
-    :param since_time: Время, начиная с которого проверять дубликаты (опционально)
-    :return: True если контент похож (нужно пропустить), False если уникален (можно публиковать)
-    """
+    """Проверяет похожесть контента с постами в канале."""
     print(f"🔍 AI проверка дубликатов: {new_article.get('title', '')[:50]}...")
     
-    # Создаем проверяльщики
     ai_checker = AIContentSimilarityChecker(threshold)
     channel_checker = TelegramChannelChecker()
     
-    # Получаем текст новой статьи
     new_text = new_article.get('post_text') or new_article.get('title', '')
     if not new_text:
         print("⚠️ Новая статья не содержит текста")
         return False
     
-    # Получаем последние посты из канала с фильтром по времени
-    recent_posts = channel_checker.get_recent_posts(limit=5, since_time=since_time)
+    recent_posts = channel_checker.get_recent_posts(limit=10, since_time=since_time)
     
     if not recent_posts:
         print("✅ Не удалось получить недавние посты - публикуем")
         return False
     
-    # Извлекаем тексты для сравнения
     existing_texts = [post['text'] for post in recent_posts]
     
     print(f"📊 Сравниваем с {len(existing_texts)} недавними постами...")
     
-    # Используем AI для анализа
     if has_gemini_key():
         print("🤖 Используем AI для анализа похожести...")
         ai_result = ai_checker.ai_compare_texts(new_text, existing_texts)
@@ -285,15 +251,14 @@ def check_content_similarity(new_article: Dict[str, Any], threshold: float = 0.7
         if ai_result.get("ai_available"):
             print("✅ AI анализ выполнен:")
             
-            # Показываем результаты сравнения
             for similarity in ai_result.get("similarities", []):
                 text_idx = similarity['text_index']
                 percent = similarity['similarity_percent']
-                post_preview = recent_posts[text_idx]['text'][:50] if text_idx < len(recent_posts) else "?"
-                date_str = recent_posts[text_idx]['date'].strftime('%H:%M %d.%m') if text_idx < len(recent_posts) else "?"
-                
-                print(f"   📊 Пост {text_idx + 1} ({date_str}): {percent}% схожості")
-                print(f"      📄 {post_preview}...")
+                if text_idx < len(recent_posts):
+                    post_preview = recent_posts[text_idx]['text'][:50]
+                    date_str = recent_posts[text_idx]['date'].strftime('%H:%M %d.%m')
+                    print(f"   📊 Пост {text_idx + 1} ({date_str}): {percent}% схожості")
+                    print(f"      📄 {post_preview}...")
             
             is_duplicate = ai_result.get("is_duplicate", False)
             max_similarity = ai_result.get("max_similarity", 0)
@@ -301,7 +266,6 @@ def check_content_similarity(new_article: Dict[str, Any], threshold: float = 0.7
             if is_duplicate:
                 print(f"🚫 AI ВИСНОВОК: ДУБЛІКАТ! (максимальна схожість: {max_similarity}%)")
                 print(f"📝 AI пояснення:")
-                # Показываем часть AI ответа с выводом
                 ai_response = ai_result.get("ai_response", "")
                 if "ВИСНОВОК:" in ai_response:
                     conclusion_part = ai_response.split("ВИСНОВОК:")[1][:200]
@@ -313,7 +277,6 @@ def check_content_similarity(new_article: Dict[str, Any], threshold: float = 0.7
         else:
             print("⚠️ AI недоступен, используем резервную проверку")
     
-    # Резервная проверка без AI
     print("🔧 Используем базовую проверку похожести...")
     max_similarity = 0.0
     
@@ -321,8 +284,9 @@ def check_content_similarity(new_article: Dict[str, Any], threshold: float = 0.7
         similarity = ai_checker.fallback_similarity_check(new_text, existing_text)
         similarity_percent = similarity * 100
         
-        post_date = recent_posts[i]['date'].strftime('%H:%M %d.%m')
-        print(f"📊 Пост {i + 1} ({post_date}): {similarity_percent:.1f}% схожості")
+        if i < len(recent_posts):
+            post_date = recent_posts[i]['date'].strftime('%H:%M %d.%m')
+            print(f"📊 Пост {i + 1} ({post_date}): {similarity_percent:.1f}% схожості")
         
         if similarity > max_similarity:
             max_similarity = similarity
@@ -334,9 +298,71 @@ def check_content_similarity(new_article: Dict[str, Any], threshold: float = 0.7
     print(f"✅ Контент унікальний (максимальна схожість: {max_similarity * 100:.1f}%)")
     return False
 
+def check_articles_similarity(articles: List[Dict[str, Any]], threshold: float = 0.7) -> List[Dict[str, Any]]:
+    """Проверяет статьи на дубликаты между собой."""
+    if not articles:
+        return []
+    
+    print(f"🔍 Проверяем {len(articles)} статей на внутренние дубликаты...")
+    
+    ai_checker = AIContentSimilarityChecker(threshold)
+    unique_articles = []
+    
+    for i, article in enumerate(articles):
+        print(f"📰 Проверяем статью {i+1}/{len(articles)}: {article.get('title', '')[:50]}...")
+        
+        article_text = article.get('post_text') or article.get('title', '')
+        
+        if not article_text:
+            print("⚠️ Статья не содержит текста - пропускаем")
+            continue
+        
+        is_duplicate = False
+        
+        if unique_articles:
+            existing_texts = [art.get('post_text', art.get('title', '')) for art in unique_articles]
+            
+            if has_gemini_key():
+                ai_result = ai_checker.ai_compare_texts(article_text, existing_texts)
+                
+                if ai_result.get("ai_available"):
+                    is_duplicate = ai_result.get("is_duplicate", False)
+                    max_similarity = ai_result.get("max_similarity", 0)
+                    
+                    if is_duplicate:
+                        print(f"🚫 AI: Дублікат! (схожість: {max_similarity}%)")
+                        for similarity in ai_result.get("similarities", []):
+                            if similarity['similarity_percent'] >= threshold * 100:
+                                idx = similarity['text_index']
+                                if idx < len(unique_articles):
+                                    similar_title = unique_articles[idx].get('title', '')[:50]
+                                    print(f"   📄 Схожа з: {similar_title}...")
+                                break
+                    else:
+                        print(f"✅ AI: Унікальна (макс. схожість: {max_similarity}%)")
+                else:
+                    print("⚠️ AI недоступен для внутренней проверки")
+            else:
+                max_similarity = 0.0
+                for existing_text in existing_texts:
+                    similarity = ai_checker.fallback_similarity_check(article_text, existing_text)
+                    max_similarity = max(max_similarity, similarity)
+                
+                is_duplicate = max_similarity >= threshold
+                print(f"🔧 Базовая проверка: {'Дублікат' if is_duplicate else 'Унікальна'} (схожість: {max_similarity * 100:.1f}%)")
+        
+        if not is_duplicate:
+            unique_articles.append(article)
+            print(f"✅ Статья добавлена в список уникальных")
+        
+        if has_gemini_key():
+            time.sleep(0.5)
+    
+    print(f"📊 Результат внутренней проверки: {len(unique_articles)}/{len(articles)} уникальных статей")
+    return unique_articles
 
 def test_ai_similarity_checker():
-    """Тестирует AI проверку похожести"""
+    """Тестирует AI проверку похожести."""
     print("🧪 ТЕСТИРОВАНИЕ AI ПРОВЕРКИ ПОХОЖЕСТИ")
     print("=" * 60)
     
@@ -345,7 +371,6 @@ def test_ai_similarity_checker():
     else:
         print("✅ AI доступен - тестируем полную систему")
     
-    # Тестовые данные
     test_articles = [
         {
             'title': 'Шахтар переміг Динамо з рахунком 2:1',
@@ -361,57 +386,13 @@ def test_ai_similarity_checker():
         }
     ]
     
-    # Тест 1: Проверяем похожие новости (должны быть дубликатами)
-    print(f"\n🔍 Тест 1: Схожі новини про той самий матч")
+    print(f"\n🔍 Тест: Внутренняя проверка дубликатов")
     print("-" * 50)
     
-    if has_gemini_key():
-        ai_checker = AIContentSimilarityChecker(0.7)
-        result = ai_checker.ai_compare_texts(
-            test_articles[0]['post_text'],
-            [test_articles[1]['post_text']]
-        )
-        
-        if result.get("ai_available"):
-            print("🤖 AI результат:")
-            print(f"   Схожість: {result.get('max_similarity', 0)}%")
-            print(f"   Дублікат: {'Так' if result.get('is_duplicate') else 'Ні'}")
-            if result.get('ai_response'):
-                print(f"   AI відповідь: {result['ai_response'][:200]}...")
-        else:
-            print("❌ AI недоступен")
+    unique_articles = check_articles_similarity(test_articles, 0.7)
     
-    # Тест 2: Проверяем разные новости (не должны быть дубликатами)
-    print(f"\n🔍 Тест 2: Різні новини")
-    print("-" * 50)
-    
-    if has_gemini_key():
-        result = ai_checker.ai_compare_texts(
-            test_articles[0]['post_text'],
-            [test_articles[2]['post_text']]
-        )
-        
-        if result.get("ai_available"):
-            print("🤖 AI результат:")
-            print(f"   Схожість: {result.get('max_similarity', 0)}%")
-            print(f"   Дублікат: {'Так' if result.get('is_duplicate') else 'Ні'}")
-    
-    # Тест 3: Получение постов из канала
-    print(f"\n🔍 Тест 3: Отримання постів з каналу")
-    print("-" * 50)
-    
-    channel_checker = TelegramChannelChecker()
-    recent_posts = channel_checker.get_recent_posts(5)
-    
-    if recent_posts:
-        print(f"✅ Отримано {len(recent_posts)} постів:")
-        for i, post in enumerate(recent_posts, 1):
-            print(f"   📝 Пост {i}: {post['text'][:60]}... ({post['date'].strftime('%H:%M %d.%m')})")
-    else:
-        print("❌ Не вдалося отримати пости")
-    
-    print(f"\n✅ Тестування завершено")
-
+    print(f"✅ Тестирование завершено")
+    print(f"📊 Результат: {len(unique_articles)}/{len(test_articles)} уникальных статей")
 
 if __name__ == "__main__":
     test_ai_similarity_checker()
