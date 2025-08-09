@@ -8,6 +8,7 @@ import time
 import re
 from typing import List, Dict, Any, Optional
 from bs4 import Tag
+from ai_processor import translate_and_process_article
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
