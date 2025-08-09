@@ -9,7 +9,7 @@ import re
 import os  # Импорт os для совместимости с ai_processor.py
 from typing import List, Dict, Any, Optional
 from bs4 import Tag
-from ai_processor import translate_and_process_article  # Импорт функции из ai_processor.py
+from ai_processor import process_article_for_posting  # Импорт функции из ai_processor.py
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -144,19 +144,35 @@ class OneFootballTargetedParser:
         # Извлечение изображения
         image_url = self.extract_article_image(soup, url)
 
-        # Перевод и обработка с AI
-        try:
-            translated_title, processed_content = translate_and_process_article(news_item['title'], article_text, url)
-        except Exception as e:
-            logger.error(f"Ошибка при переводе/обработке статьи {url}: {e}")
-            translated_title, processed_content = news_item['title'], article_text
+        # Подготовка статьи для обработки
+        article_data = {
+            'title': news_item['title'],
+            'url': url,
+            'content': article_text,
+            'summary': article_text[:300] + "..." if len(article_text) > 300 else article_text,
+            'image_url': image_url,
+            'source': 'OneFootball',
+            'original_title': news_item['title'],
+            'original_content': article_text,
+            'publish_time': publish_time
+        }
 
-        summary = processed_content[:300] + "..." if len(processed_content) > 300 else processed_content
+        # Обработка статьи с AI
+        try:
+            processed_article = process_article_for_posting(article_data)
+            translated_title = processed_article.get('title', news_item['title'])
+            processed_content = processed_article.get('processed_content', article_text)
+            summary = processed_article.get('summary', article_data['summary'])
+        except Exception as e:
+            logger.error(f"Ошибка при обработке статьи {url}: {e}")
+            translated_title = news_item['title']
+            processed_content = article_text
+            summary = article_data['summary']
 
         return {
             'title': translated_title,
             'url': url,
-            'link': url,  # Добавляем 'link' для совместимости с main.py
+            'link': url,  # Для совместимости с main.py
             'content': article_text,  # Оригинальный текст
             'summary': summary,
             'publish_time': publish_time,
