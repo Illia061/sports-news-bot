@@ -15,7 +15,9 @@ logger = logging.getLogger(__name__)
 # Конфигурационные параметры
 CONFIG = {
     'CONTENT_MAX_LENGTH': 2000,
-    'SUMMARY_MAX_WORDS': 150,
+    'TELEGRAM_MESSAGE_LIMIT': 4000,  # Лимит сообщения Telegram
+    'TELEGRAM_CAPTION_LIMIT': 1000,  # Лимит подписи к фото
+    'SUMMARY_MAX_WORDS': 100,        # Уменьшили лимит слов для краткости
     'USER_AGENTS': [
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
@@ -109,37 +111,93 @@ def create_basic_summary(article_data: Dict[str, Any]) -> str:
             return result + '.' if not result.endswith('.') else result
     return summary or title
 
-def create_enhanced_summary(article_data: Dict[str, Any]) -> str:
-    """Создает резюме с использованием Gemini или базовое резюме."""
+def create_enhanced_summary_for_onefootball(article_data: Dict[str, Any]) -> str:
+    """Создает специальное резюме для OneFootball с переводом."""
     title = article_data.get('title', '')
     content = article_data.get('content', '')
     summary = article_data.get('summary', '')
     url = article_data.get('url', '')
     source = article_data.get('source', '')
     
-    # Проверяем наличие уже обработанного контента (для OneFootball)
-    processed_content = article_data.get('processed_content', '')
-    is_onefootball = source == 'OneFootball'
-    is_espn_translated = source == 'ESPN Soccer' and article_data.get('original_content')
+    if not has_gemini_key() or not model:
+        logger.warning("Gemini недоступен для OneFootball, используем базовое резюме")
+        return create_basic_summary(article_data)
 
+    # Для OneFootball нужен перевод с английского
+    if len(content) < 100 and url:
+        logger.info(f"OneFootball: контент короткий ({len(content)} символов), загружаем полный текст...")
+        content = fetch_full_article_content(url) or summary or title
+        logger.info(f"OneFootball: загружено {len(content)} символов контента")
+
+    if len(content) < 20:
+        logger.warning("OneFootball: недостаточно контента для обработки")
+        return title
+
+    logger.info(f"OneFootball: отправляем в Gemini {len(content)} символов")
+    
+    # Специальный промпт для OneFootball
+    prompt = f"""Ти редактор футбольних новин. Переклади заголовок і створи КОРОТКИЙ пост українською для Telegram канала.
+
+ВАЖЛИВО:
+- Максимум 150 слів (це критично!)
+- Тільки ключові факти
+- Природна українська мова
+- Не копіюй заголовок у текст
+- Структура: 1-2 головні факти, потім коротке пояснення
+
+Англійський заголовок: {title}
+Англійський текст: {content[:800]}
+
+Створи ТІЛЬКИ короткий переклад українською:"""
+
+    try:
+        response = model.generate_content(prompt)
+        summary_result = response.text.strip()
+        
+        # Проверяем длину и обрезаем если нужно
+        if len(summary_result) > CONFIG['TELEGRAM_CAPTION_LIMIT']:
+            logger.warning(f"OneFootball: AI вернул слишком длинный текст ({len(summary_result)} символов), обрезаем")
+            # Обрезаем по предложениям
+            sentences = summary_result.split('. ')
+            short_result = ""
+            for sentence in sentences:
+                if len(short_result + sentence + '. ') <= CONFIG['TELEGRAM_CAPTION_LIMIT']:
+                    short_result += sentence + '. '
+                else:
+                    break
+            summary_result = short_result.rstrip()
+        
+        logger.info(f"OneFootball: AI обработал контент: {len(summary_result)} символов")
+        return summary_result
+        
+    except Exception as e:
+        logger.error(f"Ошибка Gemini для OneFootball: {e}")
+        time.sleep(1)
+        # Fallback - берем первые 2 предложения из контента
+        if content:
+            sentences = content.split('. ')[:2]
+            return '. '.join(sentences) + '.'
+        return title
+
+def create_enhanced_summary(article_data: Dict[str, Any]) -> str:
+    """Создает резюме с использованием Gemini или базовое резюме."""
+    source = article_data.get('source', '')
+    
+    # Специальная обработка для OneFootball
+    if source == 'OneFootball':
+        return create_enhanced_summary_for_onefootball(article_data)
+    
+    # Обычная обработка для других источников
+    title = article_data.get('title', '')
+    content = article_data.get('content', '')
+    summary = article_data.get('summary', '')
+    url = article_data.get('url', '')
+    
     if not has_gemini_key() or not model:
         return create_basic_summary(article_data)
 
-    # Для OneFootball используем оригинальный контент, если нет processed_content
-    if is_onefootball and not processed_content:
-        logger.info(f"OneFootball: используем оригинальный контент для AI обработки")
-        # Если контент короткий и нет полного текста, загружаем
-        if len(content) < 100 and url:
-            logger.info(f"OneFootball: контент короткий ({len(content)} символов), загружаем полный текст...")
-            content = fetch_full_article_content(url) or summary or title
-            logger.info(f"OneFootball: загружено {len(content)} символов контента")
-    elif is_onefootball and processed_content:
-        # Используем уже обработанный контент
-        logger.info(f"OneFootball: используем обработанный контент ({len(processed_content)} символов)")
-        return processed_content
-
     # Для других источников
-    if not is_onefootball and len(content) < 100 and url:
+    if len(content) < 100 and url:
         logger.info(f"Контент короткий ({len(content)} символов), загружаем полный текст...")
         content = fetch_full_article_content(url) or summary or title
         logger.info(f"Загружено {len(content)} символов контента")
@@ -150,45 +208,14 @@ def create_enhanced_summary(article_data: Dict[str, Any]) -> str:
 
     logger.info(f"Отправляем в Gemini {len(content)} символов")
     
-    # Определяем тип промпта
-    if is_onefootball:
-        prompt = f"""Ти редактор футбольних новин. Переклади англійський текст українською та створи КОРОТКИЙ пост для Telegram (макс. {CONFIG['SUMMARY_MAX_WORDS']} слів).
-
-Правила:
-- Переклади точно та природно українською мовою
-- Тільки ключові факти, без прикрас
-- Максимум 1-2 речення прямої мови
-- Структура: головний факт (1-2 речення), деталі (2-4 речення)
-- Для трансферів: вказуй суму, термін контракту
-- Для матчів: результат, ключові моменти
-
-Заголовок (англ.): {title}
-Текст (англ.): {content}
-
-КОРОТКИЙ ПОСТ УКРАЇНСЬКОЮ:"""
-    elif is_espn_translated:
-        prompt = f"""Ти редактор футбольних новин. Створи КОРОТКИЙ пост для Telegram (макс. {CONFIG['SUMMARY_MAX_WORDS']} слів) з перекладеного контенту ESPN.
-
-Правила:
-- Тільки ключові факти
-- Контент уже українською
-- Максимум 1-2 речення прямої мови
-- Для рейтингів: лише топ-5
-- Структура: головний факт (1-2 речення), деталі (2-4 речення)
-
-Заголовок: {title}
-Текст: {content}
-
-КОРОТКИЙ ПОСТ:"""
-    else:
-        prompt = f"""Ти редактор футбольних новин. Створи КОРОТКИЙ пост для Telegram (макс. {CONFIG['SUMMARY_MAX_WORDS']} слів).
+    # Обычный промпт для украинских источников
+    prompt = f"""Ти редактор футбольних новин. Створи КОРОТКИЙ пост для Telegram (макс. {CONFIG['SUMMARY_MAX_WORDS']} слів).
 
 Правила:
 - Тільки ключові факти, без прикрас
 - Українською мовою
 - Максимум 1-2 речення прямої мови
 - Не повторюй заголовок
-- Для рейтингів: лише топ-5
 - Структура: головний факт (1-2 речення), деталі (2-4 речення)
 
 Заголовок: {title}
@@ -199,11 +226,14 @@ def create_enhanced_summary(article_data: Dict[str, Any]) -> str:
     try:
         response = model.generate_content(prompt)
         summary_result = response.text.strip()
+        
         if summary_result.lower() == title.lower():
             logger.warning("AI вернул только заголовок, используем обрезанный контент")
             return content[:200] + '...' if len(content) > 200 else content
+            
         logger.info(f"AI обработал контент: {len(summary_result)} символов")
         return summary_result
+        
     except Exception as e:
         logger.error(f"Ошибка Gemini: {e}")
         time.sleep(1)
@@ -238,11 +268,35 @@ def format_for_social_media(article_data: Dict[str, Any]) -> str:
 
     # Форматируем пост в зависимости от источника
     if source == 'OneFootball':
-        post = f"<b>🌍 {title}</b>\n\n{ai_summary}\n\n📰 OneFootball\n#футбол #новини #світ"
+        # Для OneFootball - переведенный заголовок уже в ai_summary
+        post = f"<b>🌍 {ai_summary}</b>\n\n📰 OneFootball\n#футбол #новини #світ"
     elif source == 'ESPN Soccer':
         post = f"<b>🌍 {title}</b>\n\n{ai_summary}\n\n📰 ESPN Soccer\n#футбол #новини #ESPN #світ"
     else:
         post = f"<b>⚽ {title}</b>\n\n{ai_summary}\n\n#футбол #новини #спорт"
+    
+    # Проверяем лимит Telegram
+    if len(post) > CONFIG['TELEGRAM_MESSAGE_LIMIT']:
+        logger.warning(f"Пост слишком длинный ({len(post)} символов), обрезаем")
+        # Обрезаем ai_summary
+        available_space = CONFIG['TELEGRAM_MESSAGE_LIMIT'] - (len(post) - len(ai_summary)) - 50
+        if available_space > 100:
+            sentences = ai_summary.split('. ')
+            short_summary = ""
+            for sentence in sentences:
+                if len(short_summary + sentence + '. ') <= available_space:
+                    short_summary += sentence + '. '
+                else:
+                    break
+            ai_summary = short_summary.rstrip()
+            
+            # Пересобираем пост
+            if source == 'OneFootball':
+                post = f"<b>🌍 {ai_summary}</b>\n\n📰 OneFootball\n#футбол #новини #світ"
+            elif source == 'ESPN Soccer':
+                post = f"<b>🌍 {title}</b>\n\n{ai_summary}\n\n📰 ESPN Soccer\n#футбол #новини #ESPN #світ"
+            else:
+                post = f"<b>⚽ {title}</b>\n\n{ai_summary}\n\n#футбол #новини #спорт"
     
     logger.info(f"Готовый пост [{source}]: {len(post)} символов")
     return post
