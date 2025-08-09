@@ -4,6 +4,10 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import logging
 import random
+import time
+import re
+from typing import List, Dict, Any, Optional
+from bs4 import Tag
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -22,359 +26,247 @@ CONFIG = {
 
 KIEV_TZ = ZoneInfo("Europe/Kiev")
 
-def parse_publish_time(time_str: str, current_time: datetime = None) -> datetime:
-    """Преобразует строку времени в объект datetime с киевским часовым поясом (EEST).
-    Поддерживает относительное время (например, '15 minutes ago') и ISO формат."""
-    try:
-        if not current_time:
-            current_time = datetime.now(KIEV_TZ)
-        logger.debug(f"Попытка парсинга времени: {time_str}, текущее время: {current_time}")
+class OneFootballTargetedParser:
+    def __init__(self):
+        self.base_url = CONFIG['BASE_URL']
+        self.session = requests.Session()
+        self.session.headers.update({
+            "User-Agent": random.choice(CONFIG['USER_AGENTS']),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Connection": "keep-alive",
+        })
 
-        # Проверка на относительное время (например, '15 minutes ago')
-        if 'ago' in time_str.lower():
-            for unit in ['minutes', 'hours', 'days']:
-                if unit in time_str.lower():
-                    value = int(''.join(filter(str.isdigit, time_str)))
-                    if unit == 'minutes':
-                        delta = timedelta(minutes=value)
-                    elif unit == 'hours':
-                        delta = timedelta(hours=value)
-                    elif unit == 'days':
-                        delta = timedelta(days=value)
-                    return current_time - delta
-            raise ValueError("Не удалось распознать относительное время")
+    def get_page_content(self, url: str) -> Optional[BeautifulSoup]:
+        """Загружает содержимое страницы."""
+        try:
+            response = self.session.get(url, timeout=15)
+            response.raise_for_status()
+            return BeautifulSoup(response.content, 'html.parser')
+        except Exception as e:
+            logger.error(f"Ошибка загрузки страницы {url}: {e}")
+            return None
 
-        # Проверка на ISO формат (например, '2025-08-08T18:02:00Z')
-        if 'T' in time_str:
-            dt = datetime.fromisoformat(time_str.replace('Z', '+00:00')).astimezone(KIEV_TZ)
-        else:
-            try:
-                dt = datetime.strptime(time_str, '%Y-%m-%d %H:%M %Z').astimezone(KIEV_TZ)
-            except ValueError:
-                dt = datetime.strptime(time_str, '%Y-%m-%d %H:%M').replace(tzinfo=KIEV_TZ)
-        logger.debug(f"Успешно распарсено время: {time_str} -> {dt}")
-        return dt
-    except Exception as e:
-        logger.warning(f"Ошибка парсинга времени '{time_str}': {e}")
-        return current_time  # Возвращаем текущее время в случае ошибки
-
-def fetch_full_article(url: str) -> tuple[str, str]:
-    """Извлекает полный текст и изображение из статьи."""
-    try:
-        headers = {'User-Agent': random.choice(CONFIG['USER_AGENTS'])}
-        logger.info(f"🌐 Загружаем статью: {url}")
-        response = requests.get(url, headers=headers, timeout=15)  # Увеличиваем таймаут
-        response.raise_for_status()
-        soup = BeautifulSoup(response.content, 'html.parser')
-
-        # Извлечение текста - РАСШИРЕННАЯ ВЕРСИЯ для AI
-        content_selectors = [
-            # Селекторы специально для OneFootball
-            '[data-testid="article-body"]',
-            '.ArticleBody',
-            '.article-body',
-            '.article-content',
-            '.post-content', 
-            '[class*="body"]',
-            '[class*="content"]',
-            'article',
-            '.main-text',
-            '.content'
+    def find_latest_news_section(self, soup: BeautifulSoup) -> Optional[Tag]:
+        """Находит блок с последними новостями (аналог 'ГОЛОВНЕ ЗА ДОБУ')."""
+        header_texts = [
+            "Latest", "Top News", "News", "Feed", "Recent", "Breaking News"
         ]
-        
+
+        for header_text in header_texts:
+            header_element = soup.find(text=re.compile(header_text, re.I))
+            if header_element:
+                logger.info(f"✅ Найден заголовок: '{header_text}'")
+                parent = header_element.parent
+                while parent and parent.name not in ['section', 'div', 'article', 'ul']:
+                    parent = parent.parent
+                if parent:
+                    news_container = parent.find_next(['div', 'ul', 'section', 'article'])
+                    if news_container:
+                        logger.info(f"✅ Найден контейнер новостей после заголовка")
+                        return news_container
+                    return parent
+
+        # Дополнительные селекторы для OneFootball (основаны на data-testid и классах)
+        possible_selectors = [
+            '[data-testid="feed"]', '[data-testid="home-feed"]', '[data-testid="news-feed"]',
+            '.feed', '.news-feed', '.latest-news', '.article-list', '.home-feed',
+            '[class*="feed"]', '[class*="news"]', '[class*="latest"]', '[class*="article"]'
+        ]
+
+        for selector in possible_selectors:
+            elements = soup.select(selector)
+            for element in elements:
+                if re.search(r'(latest|news|feed|top|recent|breaking)', element.get_text().lower()):
+                    logger.info(f"✅ Найден блок через селектор: {selector}")
+                    return element
+
+        # Если не найдено, fallback на общий поиск
+        logger.warning("⚠️ Основной блок не найден, ищем общий контейнер с новостями")
+        all_sections = soup.find_all(['section', 'div'], class_=True)
+        for section in all_sections:
+            section_text = section.get_text().lower()
+            if any(word in section_text for word in ['news', 'latest', 'feed', 'top']):
+                logger.info(f"✅ Найден потенциальный блок новостей")
+                return section
+
+        logger.warning("❌ Блок с новостями не найден")
+        return None
+
+    def extract_news_from_section(self, section: Tag, since_time: datetime = None) -> List[Dict[str, Any]]:
+        """Извлекает новости из найденного блока с фильтрацией по времени."""
+        if not section:
+            return []
+
+        news_links = []
+        all_links = section.find_all('a', href=True)
+        logger.info(f"🔍 Найдено {len(all_links)} ссылок в блоке")
+
+        for link in all_links:
+            href = link.get('href', '')
+            title = link.get_text(strip=True)
+            if self.is_news_link(href) and len(title) > 20:
+                full_url = 'https://onefootball.com' + href if href.startswith('/') else href
+                news_links.append({
+                    'title': title,
+                    'url': full_url
+                })
+                logger.info(f"📰 Найдена новость: {title[:50]}...")
+
+        # Убираем дубликаты
+        unique_news = list({news['url']: news for news in news_links}.values())
+        return unique_news[:CONFIG['MAX_NEWS']]
+
+    def is_news_link(self, href: str) -> bool:
+        """Проверяет, является ли ссылка новостной."""
+        return 'news' in href or 'article' in href or 'story' in href
+
+    def get_full_article_data(self, news_item: Dict[str, Any], since_time: datetime = None) -> Optional[Dict[str, Any]]:
+        """Получает полный контент статьи, проверяет время и возвращает данные."""
+        url = news_item['url']
+        logger.info(f"📖 Загружаем статью: {url}")
+        soup = self.get_page_content(url)
+        if not soup:
+            return None
+
+        # Извлечение времени публикации
+        time_str = self.extract_publish_time(soup)
+        publish_time = parse_publish_time(time_str)
+        if since_time and publish_time < since_time:
+            logger.info(f"🚫 Новость старая: {publish_time} < {since_time}")
+            return None
+
+        # Извлечение контента
+        article_text = self.extract_article_text(soup)
+
+        # Извлечение изображения
+        image_url = self.extract_article_image(soup, url)
+
+        # Перевод и обработка с AI
+        translated_title, processed_content = translate_and_process_article(news_item['title'], article_text, url)
+
+        summary = processed_content[:300] + "..." if len(processed_content) > 300 else processed_content
+
+        return {
+            'title': translated_title,
+            'url': url,
+            'content': article_text,  # Оригинальный
+            'summary': summary,
+            'publish_time': publish_time,
+            'image_url': image_url,
+            'source': 'OneFootball',
+            'original_title': news_item['title'],
+            'original_content': article_text,
+            'processed_content': processed_content
+        }
+
+    def extract_publish_time(self, soup: BeautifulSoup) -> str:
+        """Извлекает строку времени из статьи."""
+        time_selectors = [
+            'time[datetime]', '[data-testid="date"]', '.date', '.publish-date',
+            '[class*="date"]', '[class*="time"]'
+        ]
+        for selector in time_selectors:
+            time_elem = soup.select_one(selector)
+            if time_elem:
+                return time_elem.get('datetime', time_elem.get_text(strip=True))
+        return str(datetime.now(KIEV_TZ))
+
+    def extract_article_text(self, soup: BeautifulSoup) -> str:
+        """Извлекает текст статьи."""
+        content_selectors = [
+            '[data-testid="article-body"]', '.ArticleBody', '.article-body',
+            '.article-content', '.post-content', '[class*="body"]', '[class*="content"]',
+            'article', '.main-text', '.content'
+        ]
         article_text = ""
         for selector in content_selectors:
             content_div = soup.select_one(selector)
             if content_div:
-                logger.info(f"📄 Найден контент с селектором: {selector}")
-                
-                # Убираем ненужные элементы
                 for unwanted in content_div.find_all(['script', 'style', 'iframe', 'div[class*="ad"]', 'aside', 'nav']):
                     unwanted.decompose()
-                
-                # Извлекаем все параграфы
                 paragraphs = content_div.find_all('p')
                 if paragraphs:
-                    meaningful_paragraphs = []
-                    for p in paragraphs:
-                        text = p.get_text(strip=True)
-                        if len(text) > 20:  # Только содержательные параграфы
-                            meaningful_paragraphs.append(text)
-                    
-                    if meaningful_paragraphs:
-                        article_text = '\n'.join(meaningful_paragraphs)
-                        logger.info(f"📝 Извлечено из параграфов: {len(article_text)} символов")
-                        break
+                    meaningful_paragraphs = [p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 20]
+                    article_text = '\n'.join(meaningful_paragraphs)
                 else:
-                    # Если параграфов нет, берем весь текст
                     article_text = content_div.get_text(strip=True)
-                    if len(article_text) > 50:
-                        logger.info(f"📝 Извлечен общий текст: {len(article_text)} символов")
-                        break
-        
-        # Если основной контейнер не найден, ищем все параграфы на странице
-        if not article_text or len(article_text) < 100:
-            logger.warning("📄 Основной контент не найден, ищем параграфы по всей странице")
-            all_paragraphs = soup.find_all('p')
-            meaningful_paragraphs = []
-            
-            for p in all_paragraphs:
-                text = p.get_text(strip=True)
-                # Фильтруем содержательные параграфы
-                if (len(text) > 50 and 
-                    not any(skip in text.lower() for skip in [
-                        'cookie', 'advertisement', 'subscribe', 'follow', 'social', 
-                        'newsletter', 'privacy', 'terms', 'copyright', '©'
-                    ])):
-                    meaningful_paragraphs.append(text)
-            
-            if meaningful_paragraphs:
-                article_text = '\n\n'.join(meaningful_paragraphs)
-                logger.info(f"📝 Извлечено из всех параграфов: {len(article_text)} символов")
-            
-            # Если все еще мало контента, расширяем поиск
-            if len(article_text) < 200:
-                logger.warning("📄 Мало контента, расширяем поиск")
-                # Ищем любые текстовые блоки
-                text_elements = soup.find_all(['div', 'span'], string=True)
-                additional_text = []
-                
-                for elem in text_elements:
-                    text = elem.get_text(strip=True)
-                    if (len(text) > 30 and 
-                        text not in article_text and
-                        not any(skip in text.lower() for skip in ['cookie', 'advertisement', 'menu', 'navigation'])):
-                        additional_text.append(text)
-                        if len('\n'.join(additional_text)) > 1000:  # Ограничиваем объем
-                            break
-                
-                if additional_text:
-                    if article_text:
-                        article_text += '\n\n' + '\n'.join(additional_text)
-                    else:
-                        article_text = '\n'.join(additional_text)
-                    logger.info(f"📝 Добавлен дополнительный контент: {len(article_text)} символов")
-
-        # Очистка текста
-        if article_text:
-            import re
-            # Убираем лишние переносы строк
-            article_text = re.sub(r'\n\s*\n\s*\n', '\n\n', article_text)
-            # Убираем очень короткие строки (вероятно мусор)
-            lines = article_text.split('\n')
-            clean_lines = []
-            for line in lines:
-                line = line.strip()
-                if len(line) > 15 or (len(line) > 5 and any(word in line.lower() for word in ['goal', 'match', 'player', 'team', 'football', 'soccer'])):
-                    clean_lines.append(line)
-            article_text = '\n'.join(clean_lines)
-            
-            # Ограничиваем размер для AI обработки
-            if len(article_text) > 2000:
-                sentences = re.split(r'[.!?]+', article_text)
-                trimmed_content = ""
-                for sentence in sentences:
-                    if len(trimmed_content + sentence) < 2000:
-                        trimmed_content += sentence + ". "
-                    else:
-                        break
-                article_text = trimmed_content.strip()
-
-        # Извлечение изображения - УЛУЧШЕННАЯ ВЕРСИЯ
-        image_selectors = [
-            'meta[property="og:image"]',
-            'meta[name="twitter:image"]',
-            '[data-testid="article-image"] img',
-            '.article-image img',
-            '.featured-image img', 
-            '[class*="image"] img',
-            'article img:first-of-type',
-            '.main-image img',
-            '.post-image img',
-            'img[src*="onefootball"]',  # Специально для OneFootball
-            'img[src*="wp-content"]',   # WordPress изображения
-            'figure img',
-            '.hero-image img'
-        ]
-        
-        image_url = ""
-        for selector in image_selectors:
-            if 'meta' in selector:
-                img_elem = soup.select_one(selector)
-                if img_elem:
-                    image_url = img_elem.get('content', '')
-            else:
-                img_elem = soup.select_one(selector)
-                if img_elem:
-                    image_url = (img_elem.get('src', '') or 
-                               img_elem.get('data-src', '') or 
-                               img_elem.get('data-lazy-src', ''))
-            
-            if image_url:
-                # Делаем полный URL если нужно
-                if not image_url.startswith('http'):
-                    if image_url.startswith('//'):
-                        image_url = 'https:' + image_url
-                    elif image_url.startswith('/'):
-                        image_url = 'https://onefootball.com' + image_url
-                
-                # Проверяем, что это качественное изображение
-                if (not any(small in image_url.lower() for small in ['icon', 'logo', 'thumb', 'avatar', 'placeholder']) 
-                    and len(image_url) > 20
-                    and ('onefootball' in image_url or 'wp-content' in image_url or 'cloudinary' in image_url)):
-                    logger.info(f"🖼️ Найдено изображение: {image_url}")
+                if len(article_text) > 100:
                     break
-                else:
-                    image_url = ""  # Сбрасываем если не подходит
-        
-        logger.info(f"✅ Статья обработана: {len(article_text)} символов текста, {'с изображением' if image_url else 'без изображения'}")
-        return article_text, image_url
+        if not article_text:
+            all_paragraphs = soup.find_all('p')
+            article_text = ' '.join(p.get_text(strip=True) for p in all_paragraphs if len(p.get_text(strip=True)) > 50)
+        return article_text
 
-    except Exception as e:
-        logger.error(f"❌ Ошибка загрузки статьи {url}: {e}")
-        return "", ""
+    def extract_article_image(self, soup: BeautifulSoup, base_url: str) -> str:
+        """Извлекает URL изображения из статьи."""
+        image_selectors = [
+            'meta[property="og:image"]', 'meta[name="twitter:image"]',
+            '[data-testid="article-image"]', '.article-image img',
+            'img[alt*="article"]', '.featured-image img', '.main-image img'
+        ]
+        for selector in image_selectors:
+            img_elem = soup.select_one(selector)
+            if img_elem:
+                image_url = img_elem.get('content', '') or img_elem.get('src', '') or img_elem.get('data-src', '')
+                if image_url:
+                    if not image_url.startswith('http'):
+                        image_url = 'https://onefootball.com' + image_url if image_url.startswith('/') else 'https://' + image_url
+                    if not any(small in image_url.lower() for small in ['icon', 'logo', 'thumb', 'avatar']):
+                        return image_url
+        return ''
 
-def translate_and_process_article(title: str, content: str, url: str) -> tuple[str, str]:
-    """Переводит и обрабатывает статью с помощью AI"""
-    try:
-        # Импортируем функции AI обработки
-        from ai_processor import create_enhanced_summary, has_gemini_key
-        
-        if not has_gemini_key():
-            logger.warning("AI недоступен - используем базовый перевод")
-            return title, content[:200] + "..." if len(content) > 200 else content
-        
-        logger.info(f"🤖 Переводим и обрабатываем статью: {title[:50]}...")
-        
-        # Создаем расширенное резюме с переводом
-        translated_summary = create_enhanced_summary({
-            'title': title,
-            'content': content,
-            'url': url,
-            'source': 'OneFootball'
-        })
-        
-        # Очищаем от возможных markdown символов
-        if translated_summary.startswith('**') and translated_summary.endswith('**'):
-            translated_summary = translated_summary.strip('* ').strip()
-        
-        # Убираем markdown из контента тоже
-        if content:
-            content = content.replace('**', '')
-        
-        logger.info(f"✅ Статья обработана AI: {len(translated_summary)} символов")
-        return translated_summary, content
-        
-    except Exception as e:
-        logger.error(f"Ошибка AI обработки статьи: {e}")
-        return title, content[:200] + "..." if len(content) > 200 else content
-
-def get_latest_news(since_time: datetime = None) -> list:
-    """Получает последние новости с OneFootball с фильтрацией по времени и полной обработкой статей."""
-    logger.info("Получение новостей с OneFootball...")
-    news_items = []
-
-    try:
-        headers = {'User-Agent': random.choice(CONFIG['USER_AGENTS'])}
-        response = requests.get(CONFIG['BASE_URL'], headers=headers, timeout=10)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.content, 'html.parser')
-
-        news_container = soup.select('section article')
-        if not news_container:
-            logger.warning("Контейнер новостей не найден")
+    def get_latest_news(self, since_time: datetime = None) -> List[Dict[str, Any]]:
+        """Получает последние новости с фильтрацией по времени."""
+        logger.info("Получение новостей с OneFootball...")
+        soup = self.get_page_content(self.base_url)
+        if not soup:
             return []
 
+        news_section = self.find_latest_news_section(soup)
+        if not news_section:
+            return []
+
+        news_items = self.extract_news_from_section(news_section, since_time)
+
+        full_articles = []
         current_time = datetime.now(KIEV_TZ)
-        # Определение since_time по умолчанию
         if since_time is None:
             current_hour = current_time.hour
             current_minute = current_time.minute
-            # Диапазон 5:50 - 6:10 утра
             if 5 <= current_hour < 6 and current_minute >= 50 or current_hour == 6 and current_minute <= 10:
                 since_time = current_time.replace(hour=1, minute=0, second=0, microsecond=0)
-                logger.info(f"Режим 5 часов: since_time установлено на {since_time}")
             else:
                 since_time = current_time - timedelta(minutes=20)
-                logger.info(f"Режим 20 минут: since_time установлено на {since_time}")
 
-        for article in news_container[:CONFIG['MAX_NEWS']]:
-            try:
-                title_elem = article.select_one('h3, [class*="title"]')
-                title = title_elem.get_text(strip=True) if title_elem else ''
+        for news_item in news_items:
+            article_data = self.get_full_article_data(news_item, since_time)
+            if article_data is None:
+                break  # Прекращаем, если встретили старую новость
+            if article_data:
+                full_articles.append(article_data)
+            time.sleep(1)  # Пауза
 
-                link_elem = article.select_one('a[href]')
-                url = link_elem['href'] if link_elem else ''
-                if url and not url.startswith('http'):
-                    url = 'https://onefootball.com' + url
+        logger.info(f"Найдено {len(full_articles)} новых новостей с OneFootball")
+        return full_articles
 
-                time_elem = article.select_one('time, [class*="date"]')
-                time_str = time_elem['datetime'] if time_elem and 'datetime' in time_elem.attrs else ''
-                if not time_str:  # Если datetime отсутствует, попробуем извлечь из текста
-                    time_text = time_elem.get_text(strip=True) if time_elem else ''
-                    time_str = time_text if time_text else str(current_time)
-                logger.debug(f"Извлечено время новости: {time_str}")
+def parse_publish_time(time_str: str, current_time: datetime = None) -> datetime:
+    """Преобразует строку времени в datetime с киевским временем."""
+    if not current_time:
+        current_time = datetime.now(KIEV_TZ)
+    if 'ago' in time_str.lower():
+        value = int(''.join(filter(str.isdigit, time_str)))
+        unit = 'minutes' if 'minute' in time_str else 'hours' if 'hour' in time_str else 'days'
+        delta = timedelta(minutes=value) if unit == 'minutes' else timedelta(hours=value) if unit == 'hours' else timedelta(days=value)
+        return current_time - delta
+    if 'T' in time_str:
+        return datetime.fromisoformat(time_str.replace('Z', '+00:00')).astimezone(KIEV_TZ)
+    try:
+        return datetime.strptime(time_str, '%Y-%m-%d %H:%M %Z').astimezone(KIEV_TZ)
+    except ValueError:
+        return datetime.strptime(time_str, '%Y-%m-%d %H:%M').replace(tzinfo=KIEV_TZ)
 
-                publish_time = parse_publish_time(time_str, current_time)
-
-                if publish_time < since_time:
-                    logger.info(f"Новость '{title[:50]}...' старая, пропускаем (publish_time={publish_time}, since_time={since_time})")
-                    continue
-
-                # Получаем полный текст статьи и изображение
-                logger.info(f"📖 Загружаем полный контент статьи: {url}")
-                article_text, image_url = fetch_full_article(url)
-                
-                logger.info(f"📄 Получено {len(article_text)} символов контента")
-                
-                # Если нет изображения из статьи, пытаемся взять thumbnail
-                if not image_url:
-                    thumb_img = article.select_one('img')
-                    if thumb_img:
-                        thumb_url = thumb_img.get('src', '') or thumb_img.get('data-src', '')
-                        if thumb_url:
-                            if not thumb_url.startswith('http'):
-                                if thumb_url.startswith('//'):
-                                    thumb_url = 'https:' + thumb_url
-                                elif thumb_url.startswith('/'):
-                                    thumb_url = 'https://onefootball.com' + thumb_url
-                            image_url = thumb_url
-                            logger.info(f"🖼️ Используем thumbnail: {image_url}")
-
-                # КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Используем AI для перевода и обработки
-                logger.info(f"🤖 Переводим и обрабатываем с AI...")
-                translated_title, processed_content = translate_and_process_article(title, article_text, url)
-
-                # Создаем summary из обработанного контента
-                summary = processed_content[:300] + "..." if len(processed_content) > 300 else processed_content
-
-                news_item = {
-                    'title': translated_title,
-                    'url': url,
-                    'content': article_text,  # ОРИГИНАЛЬНЫЙ полный контент для дальнейшей AI обработки
-                    'summary': summary,       # Краткое резюме
-                    'publish_time': publish_time,
-                    'image_url': image_url,
-                    'source': 'OneFootball',
-                    # Дополнительные поля для отладки
-                    'original_title': title,
-                    'original_content': article_text,
-                    'processed_content': processed_content  # Обработанный AI контент
-                }
-                news_items.append(news_item)
-                logger.info(f"Добавлена новость: {translated_title[:50]}...")
-                
-                # Небольшая пауза между обработкой статей
-                import time
-                time.sleep(1)
-                
-            except Exception as e:
-                logger.error(f"Ошибка обработки новости: {e}")
-                continue
-
-        logger.info(f"Найдено {len(news_items)} новых новостей с OneFootball")
-        return news_items
-
-    except Exception as e:
-        logger.error(f"Ошибка получения новостей с OneFootball: {e}")
-        return []
+# Функция для совместимости
+def get_latest_news(since_time: datetime = None) -> list:
+    parser = OneFootballTargetedParser()
+    return parser.get_latest_news(since_time)
