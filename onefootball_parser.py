@@ -8,7 +8,7 @@ import time
 import re
 from typing import List, Dict, Any, Optional
 from bs4 import Tag
-from ai_processor import translate_and_process_article
+import google.generativeai as genai
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -22,10 +22,82 @@ CONFIG = {
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0'
     ],
     'BASE_URL': 'https://onefootball.com/en/home',
-    'MAX_NEWS': 10
+    'MAX_NEWS': 10,
+    'CONTENT_MAX_LENGTH': 2000,
+    'SUMMARY_MAX_WORDS': 150
 }
 
 KIEV_TZ = ZoneInfo("Europe/Kiev")
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_AVAILABLE = False
+model = None
+
+def init_gemini():
+    """Инициализирует клиента Gemini."""
+    global GEMINI_AVAILABLE, model
+    if GEMINI_AVAILABLE:
+        return
+    if not GEMINI_API_KEY:
+        logger.warning("GEMINI_API_KEY не найден - AI функции отключены")
+        return
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel("gemini-2.5-flash")
+        GEMINI_AVAILABLE = True
+        logger.info("Gemini инициализирован")
+    except Exception as e:
+        logger.error(f"Ошибка инициализации Gemini: {e}")
+
+def has_gemini_key() -> bool:
+    """Проверяет наличие ключа Gemini и инициализирует, если нужно."""
+    if not GEMINI_AVAILABLE:
+        init_gemini()
+    return GEMINI_AVAILABLE
+
+def translate_and_process_article(title: str, content: str, url: str) -> tuple[str, str]:
+    """Переводит и обрабатывает статью с помощью Gemini."""
+    if not has_gemini_key() or not content:
+        return title, content[:CONFIG['CONTENT_MAX_LENGTH']]
+
+    try:
+        prompt = f"""Переклади українською мовою та зроби коротке резюме (до {CONFIG['SUMMARY_MAX_WORDS']} слів) наступної статті.
+Заголовок: {title}
+Текст: {content[:CONFIG['CONTENT_MAX_LENGTH']]}
+
+Інструкції:
+1. Переклади заголовок та текст українською мовою.
+2. Створи коротке резюме (1-2 речення), що відображає головну суть статті.
+3. Збережи фактичну точність, уникай вигадок.
+4. Якщо текст містить специфічні футбольні терміни, збережи їх коректність.
+5. Поверни результат у форматі:
+   Заголовок: [перекладений заголовок]
+   Резюме: [коротке резюме]
+"""
+        response = model.generate_content(prompt)
+        response_text = response.text.strip()
+
+        # Парсинг ответа
+        translated_title = title
+        summary = content[:200] + "..." if len(content) > 200 else content
+        lines = response_text.split('\n')
+        for i, line in enumerate(lines):
+            if line.startswith('Заголовок:'):
+                translated_title = line[len('Заголовок:'):].strip()
+            elif line.startswith('Резюме:'):
+                summary = line[len('Резюме:'):].strip()
+                if i + 1 < len(lines) and not lines[i + 1].startswith('Заголовок:'):
+                    summary += ' ' + ' '.join(lines[i + 1:]).strip()
+
+        if not translated_title:
+            translated_title = title
+        if not summary:
+            summary = content[:200] + "..." if len(content) > 200 else content
+
+        return translated_title, summary
+    except Exception as e:
+        logger.error(f"Ошибка обработки Gemini для {url}: {e}")
+        return title, content[:CONFIG['CONTENT_MAX_LENGTH']]
 
 class OneFootballTargetedParser:
     def __init__(self):
@@ -68,7 +140,7 @@ class OneFootballTargetedParser:
                         return news_container
                     return parent
 
-        # Дополнительные селекторы для OneFootball (основаны на data-testid и классах)
+        # Дополнительные селекторы для OneFootball
         possible_selectors = [
             '[data-testid="feed"]', '[data-testid="home-feed"]', '[data-testid="news-feed"]',
             '.feed', '.news-feed', '.latest-news', '.article-list', '.home-feed',
@@ -82,7 +154,7 @@ class OneFootballTargetedParser:
                     logger.info(f"✅ Найден блок через селектор: {selector}")
                     return element
 
-        # Если не найдено, fallback на общий поиск
+        # Fallback на общий поиск
         logger.warning("⚠️ Основной блок не найден, ищем общий контейнер с новостями")
         all_sections = soup.find_all(['section', 'div'], class_=True)
         for section in all_sections:
@@ -237,8 +309,10 @@ class OneFootballTargetedParser:
             current_minute = current_time.minute
             if 5 <= current_hour < 6 and current_minute >= 50 or current_hour == 6 and current_minute <= 10:
                 since_time = current_time.replace(hour=1, minute=0, second=0, microsecond=0)
+                logger.info(f"Режим 5 часов: since_time установлено на {since_time}")
             else:
                 since_time = current_time - timedelta(minutes=20)
+                logger.info(f"Режим 20 минут: since_time установлено на {since_time}")
 
         for news_item in news_items:
             article_data = self.get_full_article_data(news_item, since_time)
@@ -255,17 +329,21 @@ def parse_publish_time(time_str: str, current_time: datetime = None) -> datetime
     """Преобразует строку времени в datetime с киевским временем."""
     if not current_time:
         current_time = datetime.now(KIEV_TZ)
-    if 'ago' in time_str.lower():
-        value = int(''.join(filter(str.isdigit, time_str)))
-        unit = 'minutes' if 'minute' in time_str else 'hours' if 'hour' in time_str else 'days'
-        delta = timedelta(minutes=value) if unit == 'minutes' else timedelta(hours=value) if unit == 'hours' else timedelta(days=value)
-        return current_time - delta
-    if 'T' in time_str:
-        return datetime.fromisoformat(time_str.replace('Z', '+00:00')).astimezone(KIEV_TZ)
     try:
-        return datetime.strptime(time_str, '%Y-%m-%d %H:%M %Z').astimezone(KIEV_TZ)
-    except ValueError:
-        return datetime.strptime(time_str, '%Y-%m-%d %H:%M').replace(tzinfo=KIEV_TZ)
+        if 'ago' in time_str.lower():
+            value = int(''.join(filter(str.isdigit, time_str)))
+            unit = 'minutes' if 'minute' in time_str else 'hours' if 'hour' in time_str else 'days'
+            delta = timedelta(minutes=value) if unit == 'minutes' else timedelta(hours=value) if unit == 'hours' else timedelta(days=value)
+            return current_time - delta
+        if 'T' in time_str:
+            return datetime.fromisoformat(time_str.replace('Z', '+00:00')).astimezone(KIEV_TZ)
+        try:
+            return datetime.strptime(time_str, '%Y-%m-%d %H:%M %Z').astimezone(KIEV_TZ)
+        except ValueError:
+            return datetime.strptime(time_str, '%Y-%m-%d %H:%M').replace(tzinfo=KIEV_TZ)
+    except Exception as e:
+        logger.warning(f"Ошибка парсинга времени '{time_str}': {e}")
+        return current_time
 
 # Функция для совместимости
 def get_latest_news(since_time: datetime = None) -> list:
