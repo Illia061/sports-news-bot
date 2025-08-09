@@ -5,4 +5,4 @@ lxml==4.9.3
 google-generativeai==0.5.4
 schedule==1.2.0
 tenacity==8.5.0
-
+aiohttp
