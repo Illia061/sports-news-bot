@@ -57,7 +57,11 @@ async def post_with_timeout(poster, article, timeout=CONFIG['POST_TIMEOUT']):
 async def fetch_news(source_name, fetch_func, since_time):
     """Получает новости из указанного источника."""
     try:
-        news = await asyncio.to_thread(fetch_func, since_time=since_time)
+        # Проверяем, является ли fetch_func асинхронной
+        if asyncio.iscoroutinefunction(fetch_func):
+            news = await fetch_func(since_time=since_time)
+        else:
+            news = await asyncio.to_thread(fetch_func, since_time=since_time)
         if news:
             logger.info(f"{source_name}: найдено {len(news)} новостей")
             for item in news:
