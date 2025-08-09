@@ -6,9 +6,10 @@ import logging
 import random
 import time
 import re
+import os  # Импорт os для совместимости с ai_processor.py
 from typing import List, Dict, Any, Optional
 from bs4 import Tag
-import google.generativeai as genai
+from ai_processor import translate_and_process_article  # Импорт функции из ai_processor.py
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -22,82 +23,10 @@ CONFIG = {
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0'
     ],
     'BASE_URL': 'https://onefootball.com/en/home',
-    'MAX_NEWS': 10,
-    'CONTENT_MAX_LENGTH': 2000,
-    'SUMMARY_MAX_WORDS': 150
+    'MAX_NEWS': 10
 }
 
 KIEV_TZ = ZoneInfo("Europe/Kiev")
-
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_AVAILABLE = False
-model = None
-
-def init_gemini():
-    """Инициализирует клиента Gemini."""
-    global GEMINI_AVAILABLE, model
-    if GEMINI_AVAILABLE:
-        return
-    if not GEMINI_API_KEY:
-        logger.warning("GEMINI_API_KEY не найден - AI функции отключены")
-        return
-    try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel("gemini-2.5-flash")
-        GEMINI_AVAILABLE = True
-        logger.info("Gemini инициализирован")
-    except Exception as e:
-        logger.error(f"Ошибка инициализации Gemini: {e}")
-
-def has_gemini_key() -> bool:
-    """Проверяет наличие ключа Gemini и инициализирует, если нужно."""
-    if not GEMINI_AVAILABLE:
-        init_gemini()
-    return GEMINI_AVAILABLE
-
-def translate_and_process_article(title: str, content: str, url: str) -> tuple[str, str]:
-    """Переводит и обрабатывает статью с помощью Gemini."""
-    if not has_gemini_key() or not content:
-        return title, content[:CONFIG['CONTENT_MAX_LENGTH']]
-
-    try:
-        prompt = f"""Переклади українською мовою та зроби коротке резюме (до {CONFIG['SUMMARY_MAX_WORDS']} слів) наступної статті.
-Заголовок: {title}
-Текст: {content[:CONFIG['CONTENT_MAX_LENGTH']]}
-
-Інструкції:
-1. Переклади заголовок та текст українською мовою.
-2. Створи коротке резюме (1-2 речення), що відображає головну суть статті.
-3. Збережи фактичну точність, уникай вигадок.
-4. Якщо текст містить специфічні футбольні терміни, збережи їх коректність.
-5. Поверни результат у форматі:
-   Заголовок: [перекладений заголовок]
-   Резюме: [коротке резюме]
-"""
-        response = model.generate_content(prompt)
-        response_text = response.text.strip()
-
-        # Парсинг ответа
-        translated_title = title
-        summary = content[:200] + "..." if len(content) > 200 else content
-        lines = response_text.split('\n')
-        for i, line in enumerate(lines):
-            if line.startswith('Заголовок:'):
-                translated_title = line[len('Заголовок:'):].strip()
-            elif line.startswith('Резюме:'):
-                summary = line[len('Резюме:'):].strip()
-                if i + 1 < len(lines) and not lines[i + 1].startswith('Заголовок:'):
-                    summary += ' ' + ' '.join(lines[i + 1:]).strip()
-
-        if not translated_title:
-            translated_title = title
-        if not summary:
-            summary = content[:200] + "..." if len(content) > 200 else content
-
-        return translated_title, summary
-    except Exception as e:
-        logger.error(f"Ошибка обработки Gemini для {url}: {e}")
-        return title, content[:CONFIG['CONTENT_MAX_LENGTH']]
 
 class OneFootballTargetedParser:
     def __init__(self):
@@ -216,14 +145,19 @@ class OneFootballTargetedParser:
         image_url = self.extract_article_image(soup, url)
 
         # Перевод и обработка с AI
-        translated_title, processed_content = translate_and_process_article(news_item['title'], article_text, url)
+        try:
+            translated_title, processed_content = translate_and_process_article(news_item['title'], article_text, url)
+        except Exception as e:
+            logger.error(f"Ошибка при переводе/обработке статьи {url}: {e}")
+            translated_title, processed_content = news_item['title'], article_text
 
         summary = processed_content[:300] + "..." if len(processed_content) > 300 else processed_content
 
         return {
             'title': translated_title,
             'url': url,
-            'content': article_text,  # Оригинальный
+            'link': url,  # Добавляем 'link' для совместимости с main.py
+            'content': article_text,  # Оригинальный текст
             'summary': summary,
             'publish_time': publish_time,
             'image_url': image_url,
@@ -345,7 +279,25 @@ def parse_publish_time(time_str: str, current_time: datetime = None) -> datetime
         logger.warning(f"Ошибка парсинга времени '{time_str}': {e}")
         return current_time
 
-# Функция для совместимости
-def get_latest_news(since_time: datetime = None) -> list:
+# Функция для совместимости с main.py
+def get_latest_news(since_time: datetime = None) -> List[Dict[str, Any]]:
+    """Функция-обертка для совместимости с main.py."""
     parser = OneFootballTargetedParser()
-    return parser.get_latest_news(since_time)
+    articles = parser.get_latest_news(since_time)
+    # Конвертируем в формат, ожидаемый main.py
+    result = []
+    for article in articles:
+        result.append({
+            'title': article['title'],
+            'link': article['url'],  # main.py ожидает 'link'
+            'url': article['url'],   # Для ai_processor
+            'summary': article['summary'],
+            'image_url': article['image_url'],
+            'content': article['content'],  # Полный контент для AI
+            'publish_time': article.get('publish_time'),
+            'source': article['source'],
+            'original_title': article.get('original_title', ''),
+            'original_content': article.get('original_content', ''),
+            'processed_content': article.get('processed_content', '')
+        })
+    return result
