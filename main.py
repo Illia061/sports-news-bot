@@ -29,8 +29,8 @@ CONFIG = {
     'POST_TIMEOUT': 30,
     'POST_INTERVAL': 3,
     'CLEANUP_DAYS': 7,
-    'WORKING_HOURS': (6, 1),
-    'SIMILARITY_THRESHOLD': 0.7,
+    'WORKING_HOURS': (6, 1),  # 06:00 to 01:00
+    'SIMILARITY_THRESHOLD': 0.7,  # Порог схожести для проверки дубликатов
 }
 
 try:
@@ -43,7 +43,6 @@ except ImportError:
 KIEV_TZ = ZoneInfo("Europe/Kiev")
 
 async def post_with_timeout(poster, article, timeout=CONFIG['POST_TIMEOUT']):
-    """Публикует статью с таймаутом."""
     try:
         async with asyncio.timeout(timeout):
             return await asyncio.to_thread(poster.post_article, article)
@@ -55,13 +54,8 @@ async def post_with_timeout(poster, article, timeout=CONFIG['POST_TIMEOUT']):
         return False
 
 async def fetch_news(source_name, fetch_func, since_time):
-    """Получает новости из указанного источника."""
     try:
-        # Проверяем, является ли fetch_func асинхронной
-        if asyncio.iscoroutinefunction(fetch_func):
-            news = await fetch_func(since_time=since_time)
-        else:
-            news = await asyncio.to_thread(fetch_func, since_time=since_time)
+        news = await asyncio.to_thread(fetch_func, since_time=since_time)
         if news:
             logger.info(f"{source_name}: найдено {len(news)} новостей")
             for item in news:
@@ -72,7 +66,6 @@ async def fetch_news(source_name, fetch_func, since_time):
         return []
 
 async def main():
-    """Основная функция парсинга и публикации новостей."""
     logger.info("Запуск бота парсинга и публикации новостей")
     current_time_kiev = now_kiev()
     current_hour = current_time_kiev.hour
@@ -139,7 +132,7 @@ async def main():
         logger.info("Нет валидных статей для публикации")
         return
 
-    # Проверка дубликатов между статьями
+    # НОВАЯ ЛОГИКА: Проверка дубликатов между статьями
     logger.info("🔍 Проверяем статьи на внутренние дубликаты...")
     unique_articles = check_articles_similarity(valid_articles, CONFIG['SIMILARITY_THRESHOLD'])
     
@@ -195,6 +188,7 @@ async def main():
                         save_posted(article.get('title', ''))
                         logger.info("✅ Успешно опубликовано")
                         
+                        # Задержка между постами
                         if i < len(articles_to_publish) - 1:
                             logger.info(f"⏳ Пауза {CONFIG['POST_INTERVAL']} секунд...")
                             await asyncio.sleep(CONFIG['POST_INTERVAL'])
@@ -212,7 +206,7 @@ async def main():
         if not articles_to_publish:
             logger.info("📭 Нет статей для публикации")
 
-    # Сохранение результатов и статистики
+    # Сохранение результатов
     output_data = {
         'timestamp': current_time_kiev.isoformat(),
         'last_run_time': last_run_time.isoformat() if last_run_time else None,
@@ -228,17 +222,6 @@ async def main():
         }
     }
     
-    # Сохранение статистики в БД (предполагается наличие функции в db.py)
-    try:
-        from db import save_statistics
-        save_statistics(output_data)
-        logger.info("💾 Статистика сохранена в базу данных")
-    except ImportError:
-        logger.warning("Функция save_statistics не найдена в db.py")
-    except Exception as e:
-        logger.error(f"❌ Ошибка сохранения статистики: {e}")
-
-    # Сохранение в JSON
     try:
         import json
         with open('processed_news.json', 'w', encoding='utf-8') as f:
@@ -261,7 +244,7 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("⏹️ Остановлено пользователем")
+        logger.info("⏹️  Остановлено пользователем")
         sys.exit(0)
     except Exception as e:
         logger.error(f"💥 Критическая ошибка: {e}", exc_info=True)
