@@ -63,6 +63,13 @@ def fetch_full_article_content(url: str) -> str:
                 '[data-module="ArticleBody"]', '.story-body', '.article-body'
             ] if 'espn.com' in url else
             [
+                # OneFootball специфические селекторы
+                '[data-testid="article-body"]', '.ArticleBody',
+                # Общие селекторы
+                '.article-content', '.post-content', '.entry-content',
+                '[class*="content"]', '.article-body', '.post-body'
+            ] if 'onefootball.com' in url else
+            [
                 '.article-content', '.post-content', '.entry-content',
                 '[class*="content"]', '.article-body', '.post-body'
             ]
@@ -109,12 +116,30 @@ def create_enhanced_summary(article_data: Dict[str, Any]) -> str:
     summary = article_data.get('summary', '')
     url = article_data.get('url', '')
     source = article_data.get('source', '')
+    
+    # Проверяем наличие уже обработанного контента (для OneFootball)
+    processed_content = article_data.get('processed_content', '')
+    is_onefootball = source == 'OneFootball'
     is_espn_translated = source == 'ESPN Soccer' and article_data.get('original_content')
 
     if not has_gemini_key() or not model:
         return create_basic_summary(article_data)
 
-    if len(content) < 100 and not is_espn_translated and url:
+    # Для OneFootball используем оригинальный контент, если нет processed_content
+    if is_onefootball and not processed_content:
+        logger.info(f"OneFootball: используем оригинальный контент для AI обработки")
+        # Если контент короткий и нет полного текста, загружаем
+        if len(content) < 100 and url:
+            logger.info(f"OneFootball: контент короткий ({len(content)} символов), загружаем полный текст...")
+            content = fetch_full_article_content(url) or summary or title
+            logger.info(f"OneFootball: загружено {len(content)} символов контента")
+    elif is_onefootball and processed_content:
+        # Используем уже обработанный контент
+        logger.info(f"OneFootball: используем обработанный контент ({len(processed_content)} символов)")
+        return processed_content
+
+    # Для других источников
+    if not is_onefootball and len(content) < 100 and url:
         logger.info(f"Контент короткий ({len(content)} символов), загружаем полный текст...")
         content = fetch_full_article_content(url) or summary or title
         logger.info(f"Загружено {len(content)} символов контента")
@@ -124,8 +149,40 @@ def create_enhanced_summary(article_data: Dict[str, Any]) -> str:
         return summary or title
 
     logger.info(f"Отправляем в Gemini {len(content)} символов")
-    prompt = (
-        f"""Ти редактор футбольних новин. Створи КОРОТКИЙ пост для Telegram (макс. {CONFIG['SUMMARY_MAX_WORDS']} слів).
+    
+    # Определяем тип промпта
+    if is_onefootball:
+        prompt = f"""Ти редактор футбольних новин. Переклади англійський текст українською та створи КОРОТКИЙ пост для Telegram (макс. {CONFIG['SUMMARY_MAX_WORDS']} слів).
+
+Правила:
+- Переклади точно та природно українською мовою
+- Тільки ключові факти, без прикрас
+- Максимум 1-2 речення прямої мови
+- Структура: головний факт (1-2 речення), деталі (2-4 речення)
+- Для трансферів: вказуй суму, термін контракту
+- Для матчів: результат, ключові моменти
+
+Заголовок (англ.): {title}
+Текст (англ.): {content}
+
+КОРОТКИЙ ПОСТ УКРАЇНСЬКОЮ:"""
+    elif is_espn_translated:
+        prompt = f"""Ти редактор футбольних новин. Створи КОРОТКИЙ пост для Telegram (макс. {CONFIG['SUMMARY_MAX_WORDS']} слів) з перекладеного контенту ESPN.
+
+Правила:
+- Тільки ключові факти
+- Контент уже українською
+- Максимум 1-2 речення прямої мови
+- Для рейтингів: лише топ-5
+- Структура: головний факт (1-2 речення), деталі (2-4 речення)
+
+Заголовок: {title}
+Текст: {content}
+
+КОРОТКИЙ ПОСТ:"""
+    else:
+        prompt = f"""Ти редактор футбольних новин. Створи КОРОТКИЙ пост для Telegram (макс. {CONFIG['SUMMARY_MAX_WORDS']} слів).
+
 Правила:
 - Тільки ключові факти, без прикрас
 - Українською мовою
@@ -138,20 +195,6 @@ def create_enhanced_summary(article_data: Dict[str, Any]) -> str:
 Текст: {content}
 
 КОРОТКИЙ ПОСТ:"""
-    ) if not is_espn_translated else (
-        f"""Ти редактор футбольних новин. Створи КОРОТКИЙ пост для Telegram (макс. {CONFIG['SUMMARY_MAX_WORDS']} слів) з перекладеного контенту ESPN.
-Правила:
-- Тільки ключові факти
-- Контент уже українською
-- Максимум 1-2 речення прямої мови
-- Для рейтингів: лише топ-5
-- Структура: головний факт (1-2 речення), деталі (2-4 речення)
-
-Заголовок: {title}
-Текст: {content}
-
-КОРОТКИЙ ПОСТ:"""
-    )
 
     try:
         response = model.generate_content(prompt)
@@ -175,21 +218,32 @@ def format_for_social_media(article_data: Dict[str, Any]) -> str:
     source = article_data.get('source', '')
 
     logger.info(f"Форматируем для соцсетей [{source}]: {title[:50]}...")
+    
+    # Создаем расширенное резюме
     ai_summary = create_enhanced_summary({
-        'title': title, 'content': content, 'summary': summary,
-        'url': url, 'source': source, 'original_content': article_data.get('original_content', '')
+        'title': title, 
+        'content': content, 
+        'summary': summary,
+        'url': url, 
+        'source': source, 
+        'original_content': article_data.get('original_content', ''),
+        'processed_content': article_data.get('processed_content', '')
     })
 
+    # Убираем нежелательные префиксы
     unwanted_prefixes = ["Інше", "Італія", "Іспанія", "Німеччина", "Чемпіонат", "Сьогодні", "Вчера"]
     for prefix in unwanted_prefixes:
         if ai_summary.startswith(prefix):
             ai_summary = ai_summary[len(prefix):].strip(": ").lstrip()
 
-    post = (
-        f"<b>🌍 {title}</b>\n\n{ai_summary}\n\n📰 ESPN Soccer\n#футбол #новини #ESPN #світ"
-        if source == 'ESPN Soccer' else
-        f"<b>⚽ {title}</b>\n\n{ai_summary}\n\n#футбол #новини #спорт"
-    )
+    # Форматируем пост в зависимости от источника
+    if source == 'OneFootball':
+        post = f"<b>🌍 {title}</b>\n\n{ai_summary}\n\n📰 OneFootball\n#футбол #новини #світ"
+    elif source == 'ESPN Soccer':
+        post = f"<b>🌍 {title}</b>\n\n{ai_summary}\n\n📰 ESPN Soccer\n#футбол #новини #ESPN #світ"
+    else:
+        post = f"<b>⚽ {title}</b>\n\n{ai_summary}\n\n#футбол #новини #спорт"
+    
     logger.info(f"Готовый пост [{source}]: {len(post)} символов")
     return post
 
@@ -208,12 +262,15 @@ def download_image(image_url: str, filename: str = None) -> str:
         headers = {
             "User-Agent": random.choice(CONFIG['USER_AGENTS']),
             **({"Referer": "https://www.espn.com/", "Accept": "image/webp,image/apng,image/*,*/*;q=0.8"}
-               if 'espn.com' in image_url else {})
+               if 'espn.com' in image_url else 
+               {"Referer": "https://onefootball.com/", "Accept": "image/webp,image/apng,image/*,*/*;q=0.8"}
+               if 'onefootball.com' in image_url else {})
         }
         response = requests.get(image_url, headers=headers, timeout=10)
         response.raise_for_status()
         with open(filepath, 'wb') as f:
             f.write(response.content)
+        logger.info(f"🖼️ Изображение загружено: {filepath}")
         return filepath
     except Exception as e:
         logger.error(f"Ошибка загрузки изображения {image_url}: {e}")
@@ -235,9 +292,14 @@ def process_article_for_posting(article_data: Dict[str, Any]) -> Dict[str, Any]:
         'url': article_data.get('url', '') or article_data.get('link', ''),
         'summary': article_data.get('summary', ''),
         'source': source,
-        **({'original_title': article_data.get('original_title', ''),
-            'original_content': article_data.get('original_content', '')}
-           if source == 'ESPN Soccer' else {})
+        **(
+            {
+                'original_title': article_data.get('original_title', ''),
+                'original_content': article_data.get('original_content', ''),
+                'processed_content': article_data.get('processed_content', '')
+            }
+            if source in ['ESPN Soccer', 'OneFootball'] else {}
+        )
     }
     logger.info(f"Статья [{source}] обработана успешно")
     return result
