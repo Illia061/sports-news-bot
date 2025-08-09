@@ -8,9 +8,9 @@ import sys
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from parser import get_latest_news as get_football_ua_news
-from onefootball_parser_fixed import get_latest_news as get_onefootball_news
+from onefootball_parser import get_latest_news as get_onefootball_news
 from ai_processor import process_article_for_posting, has_gemini_key
-from ai_content_checker_fixed import check_content_similarity, check_articles_similarity
+from ai_content_checker import check_content_similarity, check_articles_similarity
 from db import (
     get_last_run_time,
     update_last_run_time,
