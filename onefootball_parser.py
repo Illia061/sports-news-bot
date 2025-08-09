@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 import google.generativeai as genai
 import logging
 import os
+from playwright.sync_api import sync_playwright
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -26,6 +27,7 @@ class OneFootballParser:
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9,uk;q=0.8",
             "Connection": "keep-alive",
+            "Referer": "https://onefootball.com/",
         })
         
         # Инициализация Gemini
@@ -45,15 +47,28 @@ class OneFootballParser:
         except Exception as e:
             logger.error(f"Ошибка инициализации Gemini: {e}")
 
-    def get_page_content(self, url: str) -> Optional[BeautifulSoup]:
-        """Получает содержимое страницы."""
-        try:
-            response = self.session.get(url, timeout=15)
-            response.raise_for_status()
-            return BeautifulSoup(response.text, "html.parser")
-        except Exception as e:
-            logger.error(f"Ошибка загрузки {url}: {e}")
-            return None
+    def get_page_content(self, url: str, use_playwright: bool = False) -> Optional[BeautifulSoup]:
+        """Получает содержимое страницы, с опцией использования Playwright для динамического контента."""
+        if use_playwright:
+            try:
+                with sync_playwright() as p:
+                    browser = p.chromium.launch()
+                    page = browser.new_page()
+                    page.goto(url, wait_until="networkidle")
+                    content = page.content()
+                    browser.close()
+                    return BeautifulSoup(content, "html.parser")
+            except Exception as e:
+                logger.error(f"Ошибка загрузки {url} через Playwright: {e}")
+                return None
+        else:
+            try:
+                response = self.session.get(url, timeout=15)
+                response.raise_for_status()
+                return BeautifulSoup(response.text, "html.parser")
+            except Exception as e:
+                logger.error(f"Ошибка загрузки {url}: {e}")
+                return None
 
     def find_top_news_section(self, soup: BeautifulSoup) -> Optional[BeautifulSoup]:
         """Находит секцию с верхними новостями."""
@@ -64,7 +79,10 @@ class OneFootballParser:
             '[class*="news"]',
             '[class*="articles"]',
             '.feed',
-            '.content-feed'
+            '.content-feed',
+            '[data-type="article-list"]',
+            '.news-feed',
+            '.latest-articles',
         ]
 
         for selector in possible_selectors:
@@ -76,8 +94,9 @@ class OneFootballParser:
         # Резервный поиск: все div с классами, содержащими новости
         all_divs = soup.find_all('div', class_=True)
         for div in all_divs:
-            if re.search(r'news|articles|feed|latest', str(div.get('class', '')), re.I):
-                logger.info("✅ Найден блок новостей через анализ структуры")
+            class_str = str(div.get('class', ''))
+            if re.search(r'news|articles|feed|latest|content', class_str, re.I):
+                logger.info(f"✅ Найден блок новостей через анализ структуры: {class_str}")
                 return div
 
         logger.error("❌ Секция новостей не найдена")
@@ -89,7 +108,7 @@ class OneFootballParser:
             return []
 
         news_links = []
-        articles = section.find_all(['article', 'div', 'li'], recursive=True)[:max_items]
+        articles = section.find_all(['article', 'div', 'li', 'section'], recursive=True)[:max_items]
 
         logger.info(f"🔍 Найдено {len(articles)} элементов в секции")
 
@@ -99,7 +118,7 @@ class OneFootballParser:
                 continue
 
             href = link.get('href', '')
-            title_elem = link.find(['h2', 'h3', 'span', 'div'], class_=re.compile(r'title|headline', re.I))
+            title_elem = link.find(['h1', 'h2', 'h3', 'span', 'div'], class_=re.compile(r'title|headline|text', re.I))
             title = title_elem.get_text(strip=True) if title_elem else link.get_text(strip=True)
 
             if not title or len(title) < 10 or not self.is_news_link(href):
@@ -169,7 +188,8 @@ class OneFootballParser:
             '.entry-content',
             '[class*="content"]',
             '.article-body',
-            '.post-body'
+            '.post-body',
+            '.story-body'
         ]
 
         for selector in content_selectors:
@@ -247,7 +267,7 @@ class OneFootballParser:
         url = news_item['url']
         logger.info(f"📖 Загружаем статью: {url}")
 
-        soup = self.get_page_content(url)
+        soup = self.get_page_content(url, use_playwright=True)
         if not soup:
             logger.error(f"❌ Не удалось загрузить статью: {url}")
             return None
@@ -281,7 +301,11 @@ class OneFootballParser:
 
         logger.info(f"🔍 Загружаем главную страницу OneFootball... (с {since_time.strftime('%H:%M %d.%m.%Y')})")
 
-        soup = self.get_page_content(self.base_url)
+        # Сначала пробуем с Playwright для динамического контента
+        soup = self.get_page_content(self.base_url, use_playwright=True)
+        if not soup:
+            logger.warning("Playwright не сработал, пробуем статический парсинг")
+            soup = self.get_page_content(self.base_url, use_playwright=False)
         if not soup:
             logger.error("❌ Не удалось загрузить главную страницу")
             return []
