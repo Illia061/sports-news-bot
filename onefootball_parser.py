@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 import logging
 import random
 import time
-import os
+import json
 
 
 # Настройка логирования
@@ -22,10 +22,11 @@ CONFIG = {
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0'
     ],
     'BASE_URL': 'https://onefootball.com/en/home',
-    'NEWS_API_URL': 'https://onefootball.com/en/news',  # Альтернативный URL для новостей
-    'MAX_NEWS': 10,
+    'NEWS_API_URL': 'https://onefootball.com/en/news',
+    'MAX_NEWS': 15,  # Увеличено для большего покрытия
     'RETRY_ATTEMPTS': 3,
-    'RETRY_DELAY': 2
+    'RETRY_DELAY': 2,
+    'REQUEST_DELAY': 1.5,  # Задержка между запросами к статьям
 }
 
 KIEV_TZ = ZoneInfo("Europe/Kiev")
@@ -46,6 +47,8 @@ class OneFootballParser:
             "Sec-Fetch-Mode": "navigate",
             "Sec-Fetch-Site": "none",
             "Referer": "https://onefootball.com/",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache"
         })
         
 
@@ -70,6 +73,13 @@ class OneFootballParser:
                     elif 'day' in time_str.lower():
                         delta = timedelta(days=value)
                     else:
+        logger.error("❌ ОШИБКА! Новостей не найдено")
+        logger.info("\n🔧 РЕКОМЕНДАЦИИ ПО ОТЛАДКЕ:")
+        logger.info("1. Проверьте файлы onefootball_debug_*.html")
+        logger.info("2. Убедитесь, что сайт доступен")
+        logger.info("3. Возможно, структура сайта изменилась")
+    
+    logger.info("=" * 60)
                         # По умолчанию считаем минуты
                         delta = timedelta(minutes=value)
                     return current_time - delta
@@ -125,11 +135,12 @@ class OneFootballParser:
             
             logger.info(f"✅ Страница загружена: {len(response.content)} байт")
             
-            # Сохраняем HTML для отладки
-            debug_filename = f'onefootball_debug_{attempt}.html'
-            with open(debug_filename, 'w', encoding='utf-8') as f:
-                f.write(response.text)
-            logger.info(f"🔍 HTML сохранен для отладки: {debug_filename}")
+            # Сохраняем HTML для отладки только при проблемах
+            if attempt > 1:  # Сохраняем только если была проблема
+                debug_filename = f'onefootball_debug_{attempt}.html'
+                with open(debug_filename, 'w', encoding='utf-8') as f:
+                    f.write(response.text)
+                logger.info(f"🔍 HTML сохранен для отладки: {debug_filename}")
             
             return BeautifulSoup(response.text, "html.parser")
             
@@ -147,8 +158,11 @@ class OneFootballParser:
                 return self.get_page_content(url, attempt + 1)
             return None
 
-    def debug_page_structure(self, soup: BeautifulSoup):
+    def debug_page_structure(self, soup: BeautifulSoup, show_details: bool = False):
         """Отладочная функция для анализа структуры страницы."""
+        if not show_details:
+            return
+            
         logger.info("🔍 АНАЛИЗ СТРУКТУРЫ СТРАНИЦЫ:")
         logger.info("=" * 50)
         
@@ -175,137 +189,95 @@ class OneFootballParser:
             text = link.get_text(strip=True)[:50]
             logger.info(f"   {i:2d}. {href} -> \"{text}...\"")
         
-        # Анализ заголовков
-        headers = soup.find_all(['h1', 'h2', 'h3', 'h4'])[:10]
-        logger.info(f"🏷️  Найдено {len(headers)} заголовков (показываем первые 10):")
-        for i, header in enumerate(headers, 1):
-            text = header.get_text(strip=True)
-            classes = ' '.join(header.get('class', []))
-            logger.info(f"   {i:2d}. {header.name} \"{text[:50]}...\" class=\"{classes}\"")
-        
-        # Поиск JSON-LD данных
-        json_scripts = soup.find_all('script', type='application/ld+json')
-        logger.info(f"🔧 Найдено {len(json_scripts)} JSON-LD скриптов")
-        
         logger.info("=" * 50)
 
-    def extract_news_from_scripts(self, soup: BeautifulSoup) -> list:
-        """Пытается извлечь новости из JSON-LD или других скриптов."""
-        try:
-            # Поиск JSON-LD данных
-            json_scripts = soup.find_all('script', type='application/ld+json')
-            for script in json_scripts:
-                try:
-                    data = json.loads(script.string)
-                    logger.info(f"📊 Найден JSON-LD: {type(data)}")
-                    # Здесь можно добавить логику парсинга JSON-LD
-                except:
-                    continue
-            
-            # Поиск обычных скриптов с данными
-            all_scripts = soup.find_all('script')
-            for script in all_scripts:
-                script_content = script.string or ""
-                if 'window.__INITIAL_STATE__' in script_content or 'window.__DATA__' in script_content:
-                    logger.info("📊 Найден скрипт с начальными данными")
-                    # Здесь можно добавить извлечение данных из JavaScript
-                    
-        except Exception as e:
-            logger.error(f"Ошибка при извлечении данных из скриптов: {e}")
-        
-        return []
-
     def find_news_articles_advanced(self, soup: BeautifulSoup) -> list:
-        """Расширенный поиск статей на странице."""
+        """Расширенный поиск статей на странице с улучшенными селекторами."""
         found_articles = []
         
-        # Метод 1: Поиск по ссылкам на новости
-        logger.info("🔍 Метод 1: Поиск по ссылкам на новости")
-        news_links = soup.find_all('a', href=True)
-        for link in news_links:
-            href = link.get('href', '')
-            if any(pattern in href for pattern in ['/news/', '/match/', '/article/', '/story/']):
-                title_text = link.get_text(strip=True)
-                if title_text and len(title_text) > 10:
-                    # Пытаемся найти родительский контейнер
-                    parent_article = link.find_parent(['article', 'div', 'li'])
-                    if parent_article:
-                        found_articles.append({
-                            'element': parent_article,
-                            'link': link,
-                            'title': title_text,
-                            'url': href,
-                            'method': 'link_based'
-                        })
+        # Метод 1: Поиск по современным селекторам OneFootball
+        logger.info("🔍 Метод 1: Поиск по специфичным селекторам OneFootball")
         
-        logger.info(f"   Найдено {len(found_articles)} статей через ссылки")
-        
-        # Метод 2: Поиск по заголовкам
-        logger.info("🔍 Метод 2: Поиск по заголовкам")
-        headers = soup.find_all(['h1', 'h2', 'h3', 'h4'])
-        for header in headers:
-            title_text = header.get_text(strip=True)
-            if title_text and len(title_text) > 15:  # Минимальная длина заголовка
-                # Ищем ссылку рядом с заголовком
-                parent = header.find_parent(['article', 'div', 'li', 'section'])
-                if parent:
-                    link = parent.find('a', href=True)
-                    if link and any(pattern in link.get('href', '') for pattern in ['/news/', '/match/', '/article/', '/story/']):
-                        # Проверяем, не добавили ли мы уже эту статью
-                        if not any(art['url'] == link['href'] for art in found_articles):
-                            found_articles.append({
-                                'element': parent,
-                                'link': link,
-                                'title': title_text,
-                                'url': link['href'],
-                                'method': 'header_based'
-                            })
-        
-        logger.info(f"   Найдено {len(found_articles)} уникальных статей всего")
-        
-        # Метод 3: Структурный поиск
-        logger.info("🔍 Метод 3: Структурный поиск")
-        structural_selectors = [
+        modern_selectors = [
+            # Современные селекторы OneFootball
+            '[data-testid*="teaser"]',
+            '[data-testid*="card"]',
             '[data-testid*="article"]',
             '[data-testid*="story"]',
-            '[data-testid*="news"]',
-            '[class*="article"]',
-            '[class*="story"]',
-            '[class*="news-item"]',
-            '[class*="card"]'
+            '.of-teaser',
+            '.teaser-card',
+            '.article-teaser',
+            '.story-teaser',
+            '[class*="Teaser"]',
+            '[class*="Card"]',
+            '[class*="Article"]'
         ]
         
-        for selector in structural_selectors:
+        for selector in modern_selectors:
             elements = soup.select(selector)
+            logger.info(f"   Селектор '{selector}': найдено {len(elements)} элементов")
+            
             for element in elements:
+                # Ищем ссылку и заголовок в элементе
                 link = element.find('a', href=True)
-                title_elem = element.find(['h1', 'h2', 'h3', 'h4'])
+                title_elem = element.find(['h1', 'h2', 'h3', 'h4', 'h5', 'span', 'p'])
                 
                 if link and title_elem:
                     href = link.get('href', '')
                     title_text = title_elem.get_text(strip=True)
                     
-                    if (title_text and len(title_text) > 10 and 
-                        any(pattern in href for pattern in ['/news/', '/match/', '/article/', '/story/']) and
-                        not any(art['url'] == href for art in found_articles)):
+                    # Проверяем что это новостная ссылка с нормальным заголовком
+                    if (any(pattern in href for pattern in ['/news/', '/match/', '/article/', '/story/']) and
+                        title_text and len(title_text) > 15 and len(title_text) < 200):
                         
                         found_articles.append({
                             'element': element,
                             'link': link,
                             'title': title_text,
                             'url': href,
-                            'method': f'structural_{selector}'
+                            'method': f'modern_{selector}'
                         })
         
-        logger.info(f"   Итого найдено {len(found_articles)} уникальных статей")
+        logger.info(f"   Найдено {len(found_articles)} статей через современные селекторы")
         
-        # Удаляем дубликаты по URL
+        # Метод 2: Поиск по ссылкам на новости (если мало результатов)
+        if len(found_articles) < 5:
+            logger.info("🔍 Метод 2: Поиск по всем новостным ссылкам")
+            news_links = soup.find_all('a', href=True)
+            
+            for link in news_links:
+                href = link.get('href', '')
+                if any(pattern in href for pattern in ['/news/', '/match/', '/article/', '/story/']):
+                    title_text = link.get_text(strip=True)
+                    
+                    # Проверяем качество заголовка
+                    if (title_text and 15 < len(title_text) < 200 and
+                        not any(skip in title_text.lower() for skip in 
+                               ['menu', 'navigation', 'cookie', 'subscribe', 'follow', 'share'])):
+                        
+                        # Пытаемся найти родительский контейнер
+                        parent_container = link.find_parent(['article', 'div', 'li', 'section'])
+                        if parent_container:
+                            # Проверяем, не добавили ли уже эту статью
+                            if not any(art['url'] == href for art in found_articles):
+                                found_articles.append({
+                                    'element': parent_container,
+                                    'link': link,
+                                    'title': title_text,
+                                    'url': href,
+                                    'method': 'link_based'
+                                })
+        
+        logger.info(f"   Найдено дополнительно через ссылки: {len(found_articles)} статей всего")
+        
+        # Убираем дубликаты по URL
         unique_articles = []
         seen_urls = set()
         for article in found_articles:
-            if article['url'] not in seen_urls:
+            normalized_url = article['url'].split('?')[0]  # Убираем параметры запроса
+            if normalized_url not in seen_urls:
                 unique_articles.append(article)
-                seen_urls.add(article['url'])
+                seen_urls.add(normalized_url)
         
         logger.info(f"✅ Финальный результат: {len(unique_articles)} уникальных статей")
         return unique_articles
@@ -323,33 +295,98 @@ class OneFootballParser:
             
             title = article_data['title']
             
-            # Ищем время публикации
-            time_elem = element.find('time')
-            if not time_elem:
-                time_elem = element.find(attrs={'datetime': True})
-            if not time_elem:
-                time_elem = element.find(text=re.compile(r'\d+\s*(hour|minute|day)s?\s*ago', re.I))
-            
+            # Ищем время публикации более тщательно
+            time_elem = None
             time_str = ""
-            if time_elem:
-                if hasattr(time_elem, 'get'):
+            
+            # Поиск времени в разных местах
+            time_selectors = [
+                'time[datetime]',
+                '[data-testid*="time"]',
+                '[class*="time"]',
+                '[class*="date"]',
+                '.timestamp',
+                '.publish-time',
+                '.article-time'
+            ]
+            
+            for selector in time_selectors:
+                time_elem = element.select_one(selector)
+                if time_elem:
                     time_str = time_elem.get('datetime', '') or time_elem.get_text(strip=True)
-                else:
-                    time_str = str(time_elem).strip()
+                    break
+            
+            # Если не нашли, ищем паттерны времени в тексте
+            if not time_str:
+                element_text = element.get_text()
+                time_patterns = [
+                    r'(\d+)\s*hours?\s*ago',
+                    r'(\d+)\s*minutes?\s*ago',
+                    r'(\d+)\s*days?\s*ago'
+                ]
+                
+                for pattern in time_patterns:
+                    match = re.search(pattern, element_text, re.IGNORECASE)
+                    if match:
+                        time_str = match.group(0)
+                        break
             
             publish_time = self.parse_publish_time(time_str, current_time) if time_str else current_time
             
-            # Ищем изображение
-            img_elem = element.find('img')
+            # Ищем изображение более тщательно
             image_url = ""
-            if img_elem:
-                image_url = img_elem.get('src', '') or img_elem.get('data-src', '') or img_elem.get('data-lazy-src', '')
-                if image_url and not image_url.startswith('http'):
-                    image_url = urljoin(self.base_url, image_url)
+            image_selectors = [
+                'img[src]',
+                'img[data-src]',
+                'img[data-lazy-src]',
+                '[style*="background-image"]'
+            ]
+            
+            for selector in image_selectors:
+                img_elem = element.select_one(selector)
+                if img_elem:
+                    if 'background-image' in selector:
+                        style = img_elem.get('style', '')
+                        bg_match = re.search(r'background-image:\s*url\(["\']?([^"\']+)["\']?\)', style)
+                        if bg_match:
+                            image_url = bg_match.group(1)
+                    else:
+                        image_url = (img_elem.get('src', '') or 
+                                   img_elem.get('data-src', '') or 
+                                   img_elem.get('data-lazy-src', ''))
+                    
+                    if image_url:
+                        if not image_url.startswith('http'):
+                            image_url = urljoin(self.base_url, image_url)
+                        
+                        # Проверяем что это не мелкая иконка
+                        if not any(skip in image_url.lower() for skip in 
+                                 ['icon', 'logo', 'avatar', '16x16', '32x32', 'favicon']):
+                            break
+                        else:
+                            image_url = ""  # Сбрасываем если это иконка
             
             # Ищем краткое описание
-            summary_elem = element.find(['p', 'span', 'div'], class_=re.compile(r'description|summary|excerpt', re.I))
-            summary = summary_elem.get_text(strip=True) if summary_elem else ""
+            summary = ""
+            summary_selectors = [
+                '[data-testid*="description"]',
+                '[data-testid*="excerpt"]',
+                '.description',
+                '.excerpt',
+                '.summary',
+                '.teaser-text',
+                'p'
+            ]
+            
+            for selector in summary_selectors:
+                summary_elem = element.select_one(selector)
+                if summary_elem:
+                    potential_summary = summary_elem.get_text(strip=True)
+                    # Проверяем что это не заголовок и не слишком короткое
+                    if (potential_summary and len(potential_summary) > 20 and 
+                        potential_summary.lower() != title.lower()):
+                        summary = potential_summary
+                        break
             
             result = {
                 'title': title,
@@ -366,6 +403,8 @@ class OneFootballParser:
             logger.info(f"   ⏰ Время: {time_str} -> {publish_time.strftime('%H:%M %d.%m')}")
             if image_url:
                 logger.info(f"   🖼️  Изображение: {image_url[:50]}...")
+            if summary:
+                logger.info(f"   📝 Краткое описание: {summary[:50]}...")
             
             return result
             
@@ -376,24 +415,29 @@ class OneFootballParser:
     def fetch_full_article(self, url: str) -> tuple[str, str]:
         """Извлекает полный текст и изображение из статьи."""
         try:
-            logger.info(f"📄 Загружаем полный текст статьи: {url[:50]}...")
+            logger.info(f"📄 Загружаем полный текст статьи...")
             
             soup = self.get_page_content(url)
             if not soup:
                 return "", ""
 
-            # Расширенные селекторы для контента
+            # Расширенные селекторы для контента OneFootball
             content_selectors = [
+                # Специфичные для OneFootball
                 '[data-testid*="article-body"]',
                 '[data-testid*="story-body"]',
+                '[data-testid*="content"]',
                 '.article-content',
                 '.story-content',
                 '.post-content',
-                '[class*="body"]',
+                '.main-content',
+                'article [class*="content"]',
+                'article [class*="text"]',
+                'article [class*="body"]',
+                # Общие селекторы
                 'article',
-                '.main-text',
                 '.content',
-                '[role="main"] p'
+                'main'
             ]
 
             article_text = ""
@@ -401,18 +445,23 @@ class OneFootballParser:
                 content_div = soup.select_one(selector)
                 if content_div:
                     # Удаляем нежелательные элементы
-                    for unwanted in content_div.find_all(['script', 'style', 'iframe', 'nav', 'aside', 'footer']):
+                    for unwanted in content_div.find_all(['script', 'style', 'iframe', 'nav', 'aside', 'footer', 'header']):
                         unwanted.decompose()
+                    
+                    # Удаляем рекламные блоки
+                    for ad in content_div.find_all(['div', 'section'], class_=re.compile(r'ad|banner|promo', re.I)):
+                        ad.decompose()
                     
                     paragraphs = content_div.find_all('p')
                     if paragraphs:
                         meaningful_paragraphs = []
                         for p in paragraphs:
                             text = p.get_text(strip=True)
-                            # Фильтруем короткие и служебные параграфы
-                            if (len(text) > 20 and 
+                            # Фильтруем параграфы
+                            if (len(text) > 30 and 
                                 not any(skip in text.lower() for skip in 
-                                       ['cookie', 'advertisement', 'subscribe', 'photo:', 'source:', 'getty images'])):
+                                       ['cookie', 'advertisement', 'subscribe', 'follow us', 
+                                        'photo:', 'source:', 'getty images', 'read more'])):
                                 meaningful_paragraphs.append(text)
                         
                         if meaningful_paragraphs:
@@ -420,32 +469,36 @@ class OneFootballParser:
                             logger.info(f"   ✅ Извлечен контент через {selector}: {len(article_text)} символов")
                             break
                     else:
+                        # Если нет параграфов, берем весь текст
                         article_text = content_div.get_text(strip=True)
-                        if len(article_text) > 100:  # Минимальная длина
-                            logger.info(f"   ✅ Извлечен контент через {selector}: {len(article_text)} символов")
+                        if len(article_text) > 100:
+                            logger.info(f"   ✅ Извлечен текст через {selector}: {len(article_text)} символов")
                             break
 
-            # Если основные селекторы не сработали, пробуем общий поиск параграфов
-            if not article_text:
-                logger.info("   🔄 Основные селекторы не сработали, пробуем общий поиск...")
+            # Если основные селекторы не сработали, пробуем общий поиск
+            if not article_text or len(article_text) < 100:
+                logger.info("   🔄 Основные селекторы не дали результата, пробуем общий поиск...")
                 all_paragraphs = soup.find_all('p')
                 meaningful_paragraphs = []
+                
                 for p in all_paragraphs:
                     text = p.get_text(strip=True)
-                    if (len(text) > 30 and
+                    if (len(text) > 40 and
                         not any(skip in text.lower() for skip in 
-                               ['cookie', 'advertisement', 'subscribe', 'photo', 'source', 'menu', 'navigation'])):
+                               ['cookie', 'advertisement', 'subscribe', 'photo', 'source', 
+                                'menu', 'navigation', 'follow', 'share', 'related articles'])):
                         meaningful_paragraphs.append(text)
                 
                 if meaningful_paragraphs:
                     article_text = '\n'.join(meaningful_paragraphs)
                     # Обрезаем если слишком длинный
-                    if len(article_text) > 1500:
+                    if len(article_text) > 2000:
                         sentences = re.split(r'[.!?]+', article_text)
                         trimmed_content = ""
                         current_length = 0
                         for sentence in sentences:
-                            if current_length + len(sentence) <= 1500:
+                            sentence = sentence.strip()
+                            if sentence and current_length + len(sentence) <= 2000:
                                 trimmed_content += sentence + '. '
                                 current_length += len(sentence) + 2
                             else:
@@ -453,16 +506,17 @@ class OneFootballParser:
                         article_text = trimmed_content.rstrip()
                     logger.info(f"   ✅ Извлечен контент общим поиском: {len(article_text)} символов")
 
-            # Поиск изображения статьи
+            # Поиск лучшего изображения статьи
             image_selectors = [
                 'meta[property="og:image"]',
                 'meta[name="twitter:image"]',
                 '[data-testid*="hero-image"] img',
-                '.article-image img',
-                '.story-image img',
-                '.main-image img',
+                '[data-testid*="featured-image"] img',
+                '.article-image img:first-of-type',
+                '.story-image img:first-of-type',
                 '.featured-image img',
-                'article img:first-of-type'
+                'article img:first-of-type',
+                '.main-image img'
             ]
 
             image_url = ""
@@ -478,19 +532,19 @@ class OneFootballParser:
                     
                     if image_url:
                         image_url = urljoin(url, image_url)
-                        # Проверяем, что это не иконка или логотип
+                        # Проверяем качество изображения
                         if not any(small in image_url.lower() for small in 
-                                 ['icon', 'logo', 'thumb', 'avatar', 'placeholder']):
+                                 ['icon', 'logo', 'thumb', 'avatar', 'placeholder', '150x', '100x']):
                             logger.info(f"   🖼️  Найдено изображение через {selector}")
                             break
+                        else:
+                            image_url = ""  # Сбрасываем низкокачественное изображение
             
             return article_text, image_url
 
         except Exception as e:
             logger.error(f"Ошибка загрузки статьи {url}: {e}")
             return "", ""
-
-
 
     def get_latest_news(self, since_time: datetime = None) -> list:
         """Получает последние новости с OneFootball с улучшенной логикой поиска."""
@@ -512,7 +566,7 @@ class OneFootballParser:
             self.base_url,
             self.news_url,
             'https://onefootball.com/en/news/all',
-            'https://onefootball.com/en/competition/1/news'  # Premier League news
+            'https://onefootball.com/en/news/football'
         ]
         
         soup = None
@@ -527,23 +581,22 @@ class OneFootballParser:
                 break
             else:
                 logger.warning(f"❌ Не удалось загрузить: {url}")
-                time.sleep(1)  # Небольшая пауза между попытками
+                time.sleep(2)  # Пауза между попытками
         
         if not soup:
             logger.error("❌ Не удалось загрузить ни один из URL")
             return []
 
-        # Отладка структуры страницы
-        self.debug_page_structure(soup)
-        
-        # Извлечение данных из скриптов (если доступно)
-        self.extract_news_from_scripts(soup)
+        # Отладка структуры (только при проблемах)
+        self.debug_page_structure(soup, show_details=False)
         
         # Расширенный поиск статей
         found_articles = self.find_news_articles_advanced(soup)
         
         if not found_articles:
             logger.error("❌ Не найдено ни одной статьи после всех методов поиска")
+            # При полном отсутствии результатов включаем детальную отладку
+            self.debug_page_structure(soup, show_details=True)
             return []
         
         logger.info(f"🔍 Обрабатываем {len(found_articles)} найденных статей...")
@@ -594,7 +647,7 @@ class OneFootballParser:
                 
                 # Пауза между запросами к статьям
                 if i < len(articles_to_process):
-                    time.sleep(1)
+                    time.sleep(CONFIG['REQUEST_DELAY'])
 
             except Exception as e:
                 logger.error(f"   ❌ Ошибка обработки статьи {i}: {e}")
@@ -629,7 +682,7 @@ if __name__ == "__main__":
     logger.info("=" * 60)
     
     # Тестируем без ограничения по времени для отладки
-    test_time = datetime.now(KIEV_TZ) - timedelta(hours=24)  # Последние 24 часа
+    test_time = datetime.now(KIEV_TZ) - timedelta(hours=6)  # Последние 6 часов
     
     articles = get_latest_news(since_time=test_time)
     
