@@ -18,7 +18,7 @@ CONFIG = {
     'CONTENT_MAX_LENGTH': 2000,
     'TELEGRAM_MESSAGE_LIMIT': 4000,  # Лимит сообщения Telegram
     'TELEGRAM_CAPTION_LIMIT': 1000,  # Лимит подписи к фото
-    'SUMMARY_MAX_WORDS': 100,        # Уменьшили лимит слов для краткости
+    'SUMMARY_MAX_WORDS': 150,        # Уменьшили лимит слов для краткости
     'USER_AGENTS': [
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
