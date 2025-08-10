@@ -7,6 +7,7 @@ import time
 from bs4 import BeautifulSoup
 import logging
 import random
+import re
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -111,100 +112,198 @@ def create_basic_summary(article_data: Dict[str, Any]) -> str:
             return result + '.' if not result.endswith('.') else result
     return summary or title
 
-def translate_and_format_onefootball(article_data: Dict[str, Any]) -> str:
+def translate_and_format_onefootball(article_data: Dict[str, Any]) -> Dict[str, str]:
     """Переводит и форматирует статью OneFootball в стиле Football.ua."""
     title = article_data.get('title', '')
     content = article_data.get('content', '')
     summary = article_data.get('summary', '')
     url = article_data.get('url', '')
     
-    if not has_gemini_key() or not model:
-        logger.warning("Gemini недоступен для OneFootball, используем базовое резюме")
-        return title  # Возвращаем только заголовок без перевода
+    logger.info(f"OneFootball: начинаем перевод статьи: {title[:50]}...")
+    
+    if not has_gemini_key():
+        logger.error("OneFootball: GEMINI_API_KEY отсутствует - перевод невозможен")
+        return {
+            'translated_title': f"[НЕ ПЕРЕВЕДЕНО] {title}",
+            'translated_content': "Перевод недоступен - отсутствует Gemini API ключ"
+        }
+    
+    if not model:
+        logger.error("OneFootball: модель Gemini не инициализирована")
+        return {
+            'translated_title': f"[НЕ ПЕРЕВЕДЕНО] {title}",
+            'translated_content': "Перевод недоступен - ошибка инициализации Gemini"
+        }
     
     # Собираем весь доступный контент
     full_text = ""
     if content and len(content) > 50:
         full_text = content
+        logger.info(f"OneFootball: используем основной контент ({len(content)} символов)")
     elif summary and len(summary) > 20:
         full_text = summary
+        logger.info(f"OneFootball: используем краткое описание ({len(summary)} символов)")
     else:
-        # Пытаемся загрузить полный контент
         logger.info(f"OneFootball: контент короткий, загружаем полный текст...")
         full_text = fetch_full_article_content(url) or summary or title
+        logger.info(f"OneFootball: загружен полный текст ({len(full_text)} символов)")
     
     if len(full_text) < 20:
         logger.warning("OneFootball: недостаточно контента для обработки")
-        return title
+        return {
+            'translated_title': f"[МАЛО КОНТЕНТА] {title}",
+            'translated_content': "Недостаточно контента для перевода"
+        }
     
     logger.info(f"OneFootball: отправляем в Gemini {len(full_text)} символов")
     
-    # ИСПРАВЛЕННЫЙ ПРОМПТ - создаем пост в стиле Football.ua
-    prompt = f"""Ти редактор футбольного каналу. Переклади англійську новину українською та створи пост для Telegram в стилі українських футбольних медіа.
-
-ВАЖЛИВО:
-- Переклади заголовок українською
-- Створи короткий опис (2-3 речення) 
-- Максимум 150 слів
-- Стиль як у Football.ua - лаконічно та інформативно
-- НЕ згадуй OneFootball у тексті
+    # ИСПРАВЛЕННЫЙ ПРОСТОЙ ПРОМПТ БЕЗ СЛОЖНЫХ ТЕГОВ
+    prompt = f"""Переклади футбольну новину з англійської українською мовою. Дай тільки чистий результат без додаткових тегів чи пояснень.
 
 Англійський заголовок: {title}
 
-Англійський текст: {full_text[:1000]}
+Англійський текст: {full_text[:800]}
 
-Створи ТІЛЬКИ переклад у форматі:
-ЗАГОЛОВОК УКРАЇНСЬКОЮ
+Дай відповідь точно в такому форматі (без додаткових тегів):
 
-Короткий опис новини українською (2-3 речення з ключовими фактами)."""
+Перший рядок: український переклад заголовка
+
+Другий рядок: короткий опис українською (1-2 речення з ключовими фактами, що не повторюють заголовок)"""
 
     try:
+        logger.info("OneFootball: відправляємо запит до Gemini...")
         response = model.generate_content(prompt)
-        translated_result = response.text.strip()
         
-        # Розбиваємо на заголовок і опис
-        lines = translated_result.split('\n')
+        if not response or not response.text:
+            logger.error("OneFootball: Gemini повернув пустий відповідь")
+            return {
+                'translated_title': f"[ПОМИЛКА API] {title}",
+                'translated_content': "Gemini не повернув результат"
+            }
+        
+        raw_result = response.text.strip()
+        logger.info(f"OneFootball: сырой ответ Gemini: '{raw_result[:200]}...'")
+        
+        # ОЧИСТКА ОТ МУСОРНЫХ ТЕГОВ И ФРАЗ
+        cleaned_result = raw_result
+        
+        # Убираем все возможные мусорные фразы
+        junk_patterns = [
+            r'\*\*ЗАГОЛОВОК УКРАЇНСЬКОЮ\*\*\s*',
+            r'\*\*заголовок українською\*\*\s*',
+            r'заголовок українською:?\s*',
+            r'український переклад заголовка:?\s*',
+            r'короткий опис новини українською:?\s*',
+            r'короткий опис українською:?\s*',
+            r'опис українською:?\s*',
+            r'переклад:?\s*',
+            r'\[ЗАГОЛОВОК\]\s*',
+            r'\[ОПИС\]\s*',
+            r'перший рядок:?\s*',
+            r'другий рядок:?\s*',
+            r'^\s*-\s*',  # убираем тире в начале
+            r'^\s*\*\s*', # убираем звездочки в начале
+        ]
+        
+        for pattern in junk_patterns:
+            cleaned_result = re.sub(pattern, '', cleaned_result, flags=re.IGNORECASE | re.MULTILINE)
+        
+        logger.info(f"OneFootball: после очистки: '{cleaned_result[:200]}...'")
+        
+        # Разбиваем на строки
+        lines = [line.strip() for line in cleaned_result.split('\n') if line.strip()]
+        
+        if not lines:
+            logger.error("OneFootball: после очистки не осталось строк")
+            return {
+                'translated_title': f"[ОШИБКА ПАРСИНГА] {title}",
+                'translated_content': "Не удалось распарсить ответ Gemini"
+            }
+        
+        # Первая строка - заголовок
         translated_title = lines[0].strip()
         
-        # Збираємо опис з наступних рядків
-        description_lines = []
-        for line in lines[1:]:
-            line = line.strip()
-            if line and not line.startswith('#'):
-                description_lines.append(line)
+        # Остальные строки - описание
+        if len(lines) > 1:
+            translated_content = ' '.join(lines[1:]).strip()
+        else:
+            translated_content = "Детали у повному матеріалі."
+            logger.warning("OneFootball: в ответе только одна строка, используем стандартное описание")
         
-        description = ' '.join(description_lines).strip()
+        # Дополнительная очистка заголовка от остаточного мусора
+        title_cleanup_patterns = [
+            r'^[:\-\*\s]+',  # убираем двоеточия, тире, звездочки в начале
+            r'[:\-\*\s]+$',  # убираем в конце
+        ]
         
-        # Якщо опису немає, використовуємо тільки заголовок
-        if not description:
-            description = translated_title
+        for pattern in title_cleanup_patterns:
+            translated_title = re.sub(pattern, '', translated_title).strip()
         
-        # Перевіряємо довжину
-        if len(description) > CONFIG['TELEGRAM_CAPTION_LIMIT']:
-            logger.warning(f"OneFootball: AI повернув занадто довгий текст ({len(description)} символів), обрізаємо")
-            sentences = description.split('. ')
-            short_result = ""
+        # Дополнительная очистка описания
+        content_cleanup_patterns = [
+            r'^[:\-\*\s]+',
+            r'[:\-\*\s]+$',
+        ]
+        
+        for pattern in content_cleanup_patterns:
+            translated_content = re.sub(pattern, '', translated_content).strip()
+        
+        # Убираем дублирование заголовка в описании
+        if translated_content and translated_title:
+            # Если описание начинается похоже на заголовок
+            title_words = translated_title.lower().split()[:3]  # Первые 3 слова заголовка
+            content_words = translated_content.lower().split()[:3]  # Первые 3 слова описания
+            
+            # Проверяем совпадение
+            matches = sum(1 for t, c in zip(title_words, content_words) if t == c)
+            if matches >= 2:  # Если совпадают 2+ слова
+                logger.info("OneFootball: обнаружено дублирование заголовка в описании")
+                sentences = translated_content.split('. ')
+                if len(sentences) > 1:
+                    translated_content = '. '.join(sentences[1:])
+                    if not translated_content.endswith('.'):
+                        translated_content += '.'
+                else:
+                    translated_content = "Детали розкриті у повному матеріалі."
+        
+        # Финальная проверка
+        if not translated_title:
+            translated_title = f"[ПУСТОЙ ЗАГОЛОВОК] {title}"
+            logger.error("OneFootball: заголовок пустой после очистки")
+        
+        if not translated_content or len(translated_content.strip()) < 10:
+            translated_content = "Детали розкриті у повному матеріалі."
+            logger.warning("OneFootball: описание слишком короткое")
+        
+        # Обрезаем если слишком длинное
+        if len(translated_content) > CONFIG['TELEGRAM_CAPTION_LIMIT']:
+            logger.warning(f"OneFootball: описание слишком длинное ({len(translated_content)} символов)")
+            sentences = translated_content.split('. ')
+            short_content = ""
             for sentence in sentences:
-                if len(short_result + sentence + '. ') <= CONFIG['TELEGRAM_CAPTION_LIMIT']:
-                    short_result += sentence + '. '
+                if len(short_content + sentence + '. ') <= CONFIG['TELEGRAM_CAPTION_LIMIT']:
+                    short_content += sentence + '. '
                 else:
                     break
-            description = short_result.rstrip()
+            translated_content = short_content.rstrip()
         
-        # Повертаємо форматований результат
-        final_result = {
+        result = {
             'translated_title': translated_title,
-            'translated_content': description
+            'translated_content': translated_content
         }
         
-        logger.info(f"OneFootball: AI переклав контент: заголовок {len(translated_title)} сим., опис {len(description)} сим.")
-        return final_result
+        logger.info(f"OneFootball: перевод успешно завершен")
+        logger.info(f"   Заголовок: '{translated_title}'")
+        logger.info(f"   Описание: '{translated_content[:100]}...'")
+        
+        return result
         
     except Exception as e:
-        logger.error(f"Ошибка Gemini для OneFootball: {e}")
-        time.sleep(1)
-        # Fallback
-        return {'translated_title': title, 'translated_content': title}
+        logger.error(f"OneFootball: ошибка Gemini API: {e}", exc_info=True)
+        return {
+            'translated_title': f"[ОШИБКА ПЕРЕВОДА] {title}",
+            'translated_content': f"Ошибка перевода: {str(e)}"
+        }
 
 def create_enhanced_summary(article_data: Dict[str, Any]) -> str:
     """Создает резюме с использованием Gemini или базовое резюме."""
@@ -279,9 +378,9 @@ def format_for_social_media(article_data: Dict[str, Any]) -> str:
     
     # ИСПРАВЛЕННАЯ ЛОГИКА ДЛЯ ONEFOOTBALL
     if source == 'OneFootball':
-        logger.info("OneFootball: начинаем перевод и форматирование...")
+        logger.info("OneFootball: начинаем обработку и перевод...")
         
-        # Переводим статью
+        # Переводим статью - ВСЕГДА возвращает словарь
         translation_result = translate_and_format_onefootball({
             'title': title,
             'content': content,
@@ -290,13 +389,13 @@ def format_for_social_media(article_data: Dict[str, Any]) -> str:
             'source': source
         })
         
-        if isinstance(translation_result, dict):
-            translated_title = translation_result['translated_title']
-            translated_content = translation_result['translated_content']
-        else:
-            # Fallback если что-то пошло не так
-            translated_title = title
-            translated_content = translation_result or title
+        # translation_result всегда словарь, поэтому этот блок всегда выполнится
+        translated_title = translation_result['translated_title']
+        translated_content = translation_result['translated_content']
+        
+        logger.info(f"OneFootball: результат перевода:")
+        logger.info(f"   Заголовок: {translated_title}")
+        logger.info(f"   Контент: {translated_content[:100]}...")
         
         # Форматируем пост в стиле Football.ua
         post = f"<b>⚽ {translated_title}</b>\n\n{translated_content}\n\n#футбол #новини #світ"
