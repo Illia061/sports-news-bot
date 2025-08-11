@@ -106,7 +106,7 @@ def create_basic_summary(article_data: Dict[str, Any]) -> str:
 
     if content and len(content) > 50:
         sentences = content.split('. ')
-        meaningful_sentences = [s.strip() for s in sentences if len(s.strip()) > 20][:2]
+        meaningful_sentences = [s.strip() for s in sentences if len(s.strip()) > 20][:4]
         if meaningful_sentences:
             result = '. '.join(meaningful_sentences)
             return result + '.' if not result.endswith('.') else result
@@ -162,13 +162,13 @@ def translate_and_format_onefootball(article_data: Dict[str, Any]) -> Dict[str, 
 
 Англійський заголовок: {title}
 
-Англійський текст: {full_text[:800]}
+Англійський текст: {full_text}
 
 Дай відповідь точно в такому форматі (без додаткових тегів):
 
 Перший рядок: український переклад заголовка
 
-Другий рядок: короткий опис українською (1-2 речення з ключовими фактами, що не повторюють заголовок)"""
+Другий рядок: короткий опис українською (3-5 речень з ключовими фактами, що не повторюють заголовок)"""
 
     try:
         logger.info("OneFootball: відправляємо запит до Gemini...")
@@ -341,9 +341,9 @@ def create_enhanced_summary(article_data: Dict[str, Any]) -> str:
 Правила:
 - Тільки ключові факти, без прикрас
 - Українською мовою
-- Максимум 1-2 речення прямої мови
+- Максимум 2-3 речення прямої мови
 - Не повторюй заголовок
-- Структура: головний факт (1-2 речення), деталі (2-4 речення)
+- Структура: головний факт (1-2 речення), деталі (3-5 речення)
 
 Заголовок: {title}
 Текст: {content}
