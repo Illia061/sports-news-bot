@@ -617,6 +617,12 @@ class OneFootballParser:
                 # Загружаем полный контент статьи
                 logger.info(f"   📄 Загружаем полный контент...")
                 article_text, full_image_url = self.fetch_full_article(article_info['url'])
+
+                # Проверка длины содержания статьи
+                word_count = len(article_text.split())
+                if word_count > 500:
+                    logger.info(f"   ⏩ Статья слишком длинная ({word_count} слов), пропускаем")
+                    continue
                 
                 # Используем изображение из полной статьи, если оно лучше
                 final_image_url = full_image_url or article_info['image_url']
