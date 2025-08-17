@@ -362,6 +362,15 @@ class FootballUATargetedParser:
             
             # Извлекаем основной контент
             content = self.extract_article_content(soup)
+
+            # Проверка длины статьи
+            if content:
+                words = re.findall(r'\b\w+\b', content)  # Разделяем на слова
+                word_count = len(words)
+                print(f"📊 Длина статьи: {word_count} слов")
+                if word_count > 450:
+                    print(f"🚫 Статья слишком длинная ({word_count} слов > 450) - пропускаем")
+                    return None
             
             # Создаем краткую выжимку
             summary = self.create_summary(content, news_item['title'])
