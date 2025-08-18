@@ -154,7 +154,7 @@ def check_content_similarity(new_article: Dict[str, Any], threshold: float = 0.7
     new_text = new_article.get('post_text') or new_article.get('title', '')
     if not new_text:
         return False
-    db_posts = get_recent_posts_from_db(limit=20, since_time=since_time)
+    db_posts = get_recent_posts_from_db()
     channel_posts = channel_checker.get_recent_posts(limit=10, since_time=since_time)
     recent_posts = db_posts + channel_posts
     if not recent_posts:
