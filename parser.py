@@ -91,7 +91,7 @@ class FootballUATargetedParser:
                     return element
         
         # Способ 3: Поиск всех блоков на странице, содержащих новости
-        print("⚠️  Ищем блок через анализ структуры...")
+        print("⚠️ Ищем блок через анализ структуры...")
         
         # Ищем все блоки, которые содержат ссылки на новости
         all_divs = soup.find_all(['div', 'section'], class_=True)
@@ -213,7 +213,7 @@ class FootballUATargetedParser:
                 minute = int(match2.group(5))
                 return datetime(year, month, day, hour, minute, tzinfo=KIEV_TZ)
             
-            # Паттерн: "10:48" (только время, берем сегодняшнюю дату)
+            # Паттерн: "10:48" (только время, берем сегодняшную дату)
             pattern3 = r'^(\d{1,2}):(\d{2})$'
             match3 = re.search(pattern3, cleaned_text)
             
@@ -337,8 +337,17 @@ class FootballUATargetedParser:
             print(f"⚠️ Ошибка определения времени публикации: {e}")
             return None
     
+    def count_words(self, text: str) -> int:
+        """Подсчитывает количество слов в тексте"""
+        if not text:
+            return 0
+        
+        # Убираем лишние пробелы и разделяем по словам
+        words = re.findall(r'\b\w+\b', text)
+        return len(words)
+    
     def get_full_article_data(self, news_item, since_time: Optional[datetime] = None):
-        """Получает полные данные статьи с проверкой времени"""
+        """Получает полные данные статьи с проверкой времени и длины"""
         url = news_item['url']
         soup = self.get_page_content(url)
         
@@ -349,7 +358,7 @@ class FootballUATargetedParser:
             # Определяем время публикации
             publish_time = self.estimate_article_publish_time(soup, url)
             
-            # ИЗМЕНЕНА ЛОГИКА: Если указано время фильтрации, проверяем только при наличии точного времени
+            # ИЗМЕНЕННАЯ ЛОГИКА: Если указано время фильтрации, проверяем только при наличии точного времени
             if since_time and publish_time:
                 if publish_time <= since_time:
                     print(f"⏰ Статья опубликована {publish_time.strftime('%H:%M %d.%m')} - пропускаем (до {since_time.strftime('%H:%M %d.%m')})")
@@ -363,6 +372,16 @@ class FootballUATargetedParser:
             # Извлекаем основной контент
             content = self.extract_article_content(soup)
             
+            # НОВАЯ ПРОВЕРКА: подсчитываем количество слов
+            word_count = self.count_words(content)
+            print(f"📊 Количество слов в статье: {word_count}")
+            
+            if word_count > 450:
+                print(f"📏 Статья слишком длинная ({word_count} слов > 450) - пропускаем")
+                return None
+            
+            print(f"✅ Статья подходит по длине ({word_count} слов ≤ 450)")
+            
             # Создаем краткую выжимку
             summary = self.create_summary(content, news_item['title'])
             
@@ -375,7 +394,8 @@ class FootballUATargetedParser:
                 'content': content,
                 'summary': summary,
                 'image_url': image_url,
-                'publish_time': publish_time
+                'publish_time': publish_time,
+                'word_count': word_count  # Добавляем количество слов в результат
             }
             
         except Exception as e:
@@ -484,7 +504,7 @@ class FootballUATargetedParser:
         return ''
     
     def get_latest_news(self, since_time: Optional[datetime] = None):
-        """Основной метод - получает новости из блока 'ГОЛОВНЕ ЗА ДОБУ' с фильтрацией по времени"""
+        """Основной метод - получает новости из блока 'ГОЛОВНЕ ЗА ДОБУ' с фильтрацией по времени и длине"""
         print("🔍 Загружаем главную страницу Football.ua...")
         
         if since_time:
@@ -550,7 +570,8 @@ def get_latest_news(since_time: Optional[datetime] = None):
             'summary': article['summary'],
             'image_url': article['image_url'],
             'content': article['content'],  # ВАЖНО: полный контент для AI
-            'publish_time': article.get('publish_time')  # НОВОЕ: время публикации
+            'publish_time': article.get('publish_time'),  # НОВОЕ: время публикации
+            'word_count': article.get('word_count')  # НОВОЕ: количество слов
         })
     
     return result
@@ -569,8 +590,9 @@ def test_targeted_parser():
         print(f"✅ Найдено {len(articles)} новостей")
         for i, article in enumerate(articles, 1):
             publish_time = article.get('publish_time')
+            word_count = article.get('word_count', 'неизвестно')
             time_str = publish_time.strftime('%H:%M %d.%m') if publish_time else 'неизвестно'
-            print(f"   📰 {i}. {article['title'][:50]}... ({time_str})")
+            print(f"   📰 {i}. {article['title'][:50]}... ({time_str}, {word_count} слов)")
     
     # Тест 2: Получение новостей с фильтрацией по времени
     print(f"\n📋 Тест 2: Получение новостей за последние 30 минут")
@@ -581,10 +603,11 @@ def test_targeted_parser():
         print(f"✅ Найдено {len(recent_articles)} новых новостей")
         for i, article in enumerate(recent_articles, 1):
             publish_time = article.get('publish_time')
+            word_count = article.get('word_count', 'неизвестно')
             time_str = publish_time.strftime('%H:%M %d.%m') if publish_time else 'неизвестно'
-            print(f"   📰 {i}. {article['title'][:50]}... ({time_str})")
+            print(f"   📰 {i}. {article['title'][:50]}... ({time_str}, {word_count} слов)")
     else:
-        print("📭 Новых новостей за последние 30 минут не найдено")
+        print("🔭 Новых новостей за последние 30 минут не найдено")
 
 if __name__ == "__main__":
     test_targeted_parser()
