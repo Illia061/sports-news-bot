@@ -508,7 +508,8 @@ class FootballUATargetedParser:
         print("🔍 Загружаем главную страницу Football.ua...")
         
         if since_time:
-            print(f"🕒 Ищем новости с {since_time.strftime('%H:%M %d.%m.%Y')}")
+            since_time_buffered = since_time - timedelta(minutes=1)
+            print(f"🕒 Ищем новости с {since_time_buffered.strftime('%H:%M %d.%m.%Y')}")
         
         soup = self.get_page_content(self.base_url)
         if not soup:
@@ -523,7 +524,7 @@ class FootballUATargetedParser:
             return []
         
         print("📰 Извлекаем новости из блока...")
-        news_items = self.extract_news_from_section(golovne_section, since_time)
+        news_items = self.extract_news_from_section(golovne_section, since_time_buffered)
         
         if not news_items:
             print("❌ Новости в блоке не найдены")
@@ -540,7 +541,7 @@ class FootballUATargetedParser:
             article_data = self.get_full_article_data(news_item, since_time)
             
             # Если статья не подходит по времени, прекращаем обработку
-            if since_time and article_data is None:
+            if since_time_buffered and article_data is None:
                 print(f"🛑 Обнаружена старая новость, прекращаем обработку остальных новостей")
                 break
             
@@ -558,7 +559,7 @@ class FootballUATargetedParser:
 def get_latest_news(since_time: Optional[datetime] = None):
     """Функция-обертка для совместимости"""
     parser = FootballUATargetedParser()
-    articles = parser.get_latest_news(since_time)
+    articles = parser.get_latest_news(since_time - timedelta(minutes=1))
     
     # Конвертируем в формат, ожидаемый основным кодом
     result = []
