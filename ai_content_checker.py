@@ -127,10 +127,11 @@ class TelegramChannelChecker:
             return []
 
 
-def get_recent_posts_from_db(limit: int = 10, since_time: Optional[datetime] = None):
-    query = "SELECT title, post_text, posted_at FROM posted_news ORDER BY posted_at DESC LIMIT ?"
-    cursor.execute(query, (limit,))
+def get_recent_posts_from_db():
+    query = "SELECT title, post_text, posted_at FROM posted_news ORDER BY posted_at DESC LIMIT 4"
+    cursor.execute(query)
     rows = cursor.fetchall()
+    
     posts = []
     for row in rows:
         title, post_text, posted_at = row
@@ -140,8 +141,8 @@ def get_recent_posts_from_db(limit: int = 10, since_time: Optional[datetime] = N
                 dt = datetime.fromisoformat(posted_at)
             except Exception:
                 dt = None
-            if not since_time or (dt and dt >= since_time):
-                posts.append({'text': text, 'date': dt})
+            posts.append({'text': text, 'date': dt})
+    
     print(f"✅ Получено {len(posts)} последних постов из базы")
     return posts
 
