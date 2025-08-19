@@ -338,7 +338,7 @@ class FootballUATargetedParser:
             return None
     
     def count_words(self, text: str) -> int:
-        """ИСПРАВЛЕННЫЙ подсчет количества слов в тексте"""
+        """ПРАВИЛЬНЫЙ подсчет количества слов в тексте (из onefootball_parser.py)"""
         if not text:
             return 0
         
@@ -358,7 +358,7 @@ class FootballUATargetedParser:
         return len(words)
     
     def extract_clean_article_content(self, soup):
-        """ИСПРАВЛЕННОЕ извлечение ТОЛЬКО основного текста статьи без служебной информации"""
+        """ПРАВИЛЬНОЕ извлечение ТОЛЬКО основного текста статьи без служебной информации (из onefootball_parser.py)"""
         
         # Сначала удаляем все ненужные элементы
         unwanted_selectors = [
@@ -409,9 +409,9 @@ class FootballUATargetedParser:
                         # Фильтруем короткие и служебные параграфы
                         if (len(p_text) > 20 and 
                             not any(skip in p_text.lower() for skip in [
-                                'читайте также', 'подписывайтесь', 'следите',
-                                'источник', 'фото', 'видео', 'реклама',
-                                'cookie', 'підпис', 'джерело', 'читайте',
+                                'читайте також', 'підписуйтесь', 'стежите',
+                                'джерело', 'фото', 'відео', 'реклама',
+                                'cookie', 'підпис', 'читайте',
                                 'telegram', 'facebook', 'twitter', 'instagram'
                             ])):
                             paragraph_texts.append(p_text)
@@ -470,7 +470,7 @@ class FootballUATargetedParser:
         return main_content
     
     def get_full_article_data(self, news_item, since_time: Optional[datetime] = None):
-        """Получает полные данные статьи с ИСПРАВЛЕННОЙ проверкой времени и длины"""
+        """ИСПРАВЛЕННЫЙ метод получения полных данных статьи с проверкой времени и длины"""
         url = news_item['url']
         soup = self.get_page_content(url)
         
@@ -481,9 +481,9 @@ class FootballUATargetedParser:
             # Определяем время публикации
             publish_time = self.estimate_article_publish_time(soup, url)
             
-            # ИЗМЕНЕННАЯ ЛОГИКА: Если указано время фильтрации, проверяем только при наличии точного времени
+            # ИСПРАВЛЕННАЯ ЛОГИКА: Если указано время фильтрации, проверяем только при наличии точного времени
             if since_time and publish_time:
-                if publish_time <= since_time - timedelta(minutes=1) :
+                if publish_time <= since_time:
                     print(f"⏰ Статья опубликована {publish_time.strftime('%H:%M %d.%m')} - пропускаем (до {since_time.strftime('%H:%M %d.%m')})")
                     return None
                 else:
@@ -496,10 +496,11 @@ class FootballUATargetedParser:
             clean_content = self.extract_clean_article_content(soup)
             
             # ИСПРАВЛЕНО: подсчитываем количество слов в ЧИСТОМ контенте
-            word_count = len(clean_content.split())
-        
+            word_count = self.count_words(clean_content)
+            
             print(f"📊 Количество слов в ЧИСТОЙ статье: {word_count}")
             
+            # ИСПРАВЛЕННАЯ ПРОВЕРКА: проверяем длину ЧИСТОГО контента
             if word_count > 500:
                 print(f"📏 Статья слишком длинная ({word_count} слов > 500) - пропускаем")
                 return None
@@ -515,11 +516,11 @@ class FootballUATargetedParser:
             return {
                 'title': news_item['title'],
                 'url': url,
-                'content': clean_content,  # Возвращаем чистый контент
+                'content': clean_content,  # ЧИСТЫЙ контент
                 'summary': summary,
                 'image_url': image_url,
                 'publish_time': publish_time,
-                'word_count': word_count  # Корректное количество слов
+                'word_count': word_count  # ПРАВИЛЬНОЕ количество слов
             }
             
         except Exception as e:
@@ -527,8 +528,7 @@ class FootballUATargetedParser:
             return None
     
     def extract_article_content(self, soup):
-        """УСТАРЕВШИЙ метод - оставлен для обратной совместимости"""
-        # Теперь просто вызывает новый метод
+        """УСТАРЕВШИЙ метод - теперь вызывает правильный метод"""
         return self.extract_clean_article_content(soup)
     
     def create_summary(self, content, title):
@@ -577,12 +577,11 @@ class FootballUATargetedParser:
         return ''
     
     def get_latest_news(self, since_time: Optional[datetime] = None):
-        """Основной метод - получает новости из блока 'ГОЛОВНЕ ЗА ДОБУ' с фильтрацией по времени и длине"""
+        """ИСПРАВЛЕННЫЙ основной метод - получает новости из блока 'ГОЛОВНЕ ЗА ДОБУ' с правильной фильтрацией"""
         print("🔍 Загружаем главную страницу Football.ua...")
         
         if since_time:
-            since_time_buffered = since_time - timedelta(minutes=1)
-            print(f"🕒 Ищем новости с {since_time_buffered.strftime('%H:%M %d.%m.%Y')}")
+            print(f"🕒 Ищем новости с {since_time.strftime('%H:%M %d.%m.%Y')}")
         
         soup = self.get_page_content(self.base_url)
         if not soup:
@@ -597,7 +596,7 @@ class FootballUATargetedParser:
             return []
         
         print("📰 Извлекаем новости из блока...")
-        news_items = self.extract_news_from_section(golovne_section, since_time_buffered)
+        news_items = self.extract_news_from_section(golovne_section, since_time)
         
         if not news_items:
             print("❌ Новости в блоке не найдены")
@@ -613,26 +612,32 @@ class FootballUATargetedParser:
             
             article_data = self.get_full_article_data(news_item, since_time)
             
-            # Если статья не подходит по времени, прекращаем обработку
-            if since_time_buffered and article_data is None:
-                print(f"🛑 Обнаружена старая новость, прекращаем обработку остальных новостей")
-                break
+            # Если статья не подходит по времени или длине, пропускаем
+            if article_data is None:
+                print(f"⏭️ Статья не подходит - пропускаем")
+                continue
             
-            # Если статья подходит по времени, добавляем её
-            if article_data:
-                full_articles.append(article_data)
+            # Если статья подходит, добавляем её
+            full_articles.append(article_data)
+            print(f"✅ Статья добавлена: {article_data['title'][:50]}...")
             
             # Небольшая пауза между запросами
             time.sleep(1)
         
-        print(f"✅ Обработано {len(full_articles)} новых статей")
+        print(f"✅ Обработано {len(full_articles)} подходящих статей")
         return full_articles
 
 # Функция для совместимости с существующим кодом
 def get_latest_news(since_time: Optional[datetime] = None):
     """Функция-обертка для совместимости"""
     parser = FootballUATargetedParser()
-    articles = parser.get_latest_news(since_time - timedelta(minutes=1))
+    
+    # Добавляем буфер времени как в onefootball_parser
+    if since_time:
+        since_time_buffered = since_time - timedelta(minutes=1)
+        articles = parser.get_latest_news(since_time_buffered)
+    else:
+        articles = parser.get_latest_news()
     
     # Конвертируем в формат, ожидаемый основным кодом
     result = []
@@ -643,16 +648,17 @@ def get_latest_news(since_time: Optional[datetime] = None):
             'url': article['url'],   # добавляем и 'url' для ai_processor
             'summary': article['summary'],
             'image_url': article['image_url'],
-            'content': article['content'],  # ВАЖНО: полный контент для AI
+            'content': article['content'],  # ВАЖНО: полный чистый контент для AI
             'publish_time': article.get('publish_time'),  # НОВОЕ: время публикации
-            'word_count': article.get('word_count')  # НОВОЕ: количество слов
+            'word_count': article.get('word_count'),  # НОВОЕ: правильное количество слов
+            'source': 'Football.ua'  # Добавляем источник
         })
     
     return result
 
 def test_targeted_parser():
     """Тестирование целевого парсера"""
-    print("🎯 ТЕСТИРУЕМ ПАРСЕР ДЛЯ БЛОКА 'ГОЛОВНЕ ЗА ДОБУ'")
+    print("🎯 ТЕСТИРУЕМ ИСПРАВЛЕННЫЙ ПАРСЕР ДЛЯ БЛОКА 'ГОЛОВНЕ ЗА ДОБУ'")
     print("=" * 60)
     
     # Тест 1: Получение всех новостей (старое поведение)
@@ -682,6 +688,19 @@ def test_targeted_parser():
             print(f"   📰 {i}. {article['title'][:50]}... ({time_str}, {word_count} слов)")
     else:
         print("🔭 Новых новостей за последние 30 минут не найдено")
+    
+    # Тест 3: Проверка подсчета слов
+    print(f"\n📋 Тест 3: Демонстрация правильного подсчета слов")
+    test_texts = [
+        "Это простой текст из пяти слов.",
+        "Текст с    лишними   пробелами и знаками препинания!!!",
+        "<p>HTML текст</p> с <strong>тегами</strong> и обычным текстом.",
+        ""
+    ]
+    
+    for test_text in test_texts:
+        word_count = parser.count_words(test_text)
+        print(f"   📝 \"{test_text[:30]}...\" → {word_count} слов")
 
 if __name__ == "__main__":
     test_targeted_parser()
