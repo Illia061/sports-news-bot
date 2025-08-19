@@ -483,7 +483,7 @@ class FootballUATargetedParser:
             
             # ИЗМЕНЕННАЯ ЛОГИКА: Если указано время фильтрации, проверяем только при наличии точного времени
             if since_time and publish_time:
-                if publish_time <= since_time:
+                if publish_time <= since_time - timedelta(minutes=1) :
                     print(f"⏰ Статья опубликована {publish_time.strftime('%H:%M %d.%m')} - пропускаем (до {since_time.strftime('%H:%M %d.%m')})")
                     return None
                 else:
@@ -496,14 +496,15 @@ class FootballUATargetedParser:
             clean_content = self.extract_clean_article_content(soup)
             
             # ИСПРАВЛЕНО: подсчитываем количество слов в ЧИСТОМ контенте
-            word_count = self.count_words(clean_content)
+            word_count = len(clean_content.split())
+        
             print(f"📊 Количество слов в ЧИСТОЙ статье: {word_count}")
             
-            if word_count > 450:
-                print(f"📏 Статья слишком длинная ({word_count} слов > 450) - пропускаем")
-                return None
+            if word_count > 500:
+                print(f"📏 Статья слишком длинная ({word_count} слов > 500) - пропускаем")
+                continue
             
-            print(f"✅ Статья подходит по длине ({word_count} слов ≤ 450)")
+            print(f"✅ Статья подходит по длине ({word_count} слов ≤ 500)")
             
             # Создаем краткую выжимку из чистого контента
             summary = self.create_summary(clean_content, news_item['title'])
