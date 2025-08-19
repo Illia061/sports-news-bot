@@ -502,7 +502,7 @@ class FootballUATargetedParser:
             
             if word_count > 500:
                 print(f"📏 Статья слишком длинная ({word_count} слов > 500) - пропускаем")
-                continue
+                return None
             
             print(f"✅ Статья подходит по длине ({word_count} слов ≤ 500)")
             
