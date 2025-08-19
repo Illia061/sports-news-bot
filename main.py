@@ -30,7 +30,7 @@ CONFIG = {
     'POST_INTERVAL': 3,
     'CLEANUP_DAYS': 7,
     'WORKING_HOURS': (6, 1),  # 06:00 to 01:00
-    'SIMILARITY_THRESHOLD': 0.7,  # Порог схожести для проверки дубликатов
+    'SIMILARITY_THRESHOLD': 0.75,  # Порог схожести для проверки дубликатов
 }
 
 try:
