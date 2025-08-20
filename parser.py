@@ -339,182 +339,162 @@ class FootballUATargetedParser:
             return None
     
     def count_words(self, text: str) -> int:
-        """ПРАВИЛЬНЫЙ подсчет количества слов в тексте"""
+           """ТОЧНЫЙ подсчет слов как делает человек - только значимые слова"""
         if not text:
             return 0
-        
-        # Убираем HTML теги, если остались
+    
+        # Убираем HTML теги полностью
         clean_text = re.sub(r'<[^>]+>', '', text)
-        
-        # Убираем лишние пробелы, переносы строк и табы
+    
+        # Убираем служебные фразы и информацию
+        service_patterns = [
+            r'\d{1,2}\s+\w+\s+\d{4},\s+\d{1,2}:\d{2}',  # даты и время
+            r'getty images',
+            r'фото:.*',
+            r'джерело:.*',
+            r'читайте також:.*',
+            r'\([^)]*\)',  # содержимое в скобках как (1:0)
+        ]
+    
+        for pattern in service_patterns:
+            clean_text = re.sub(pattern, '', clean_text, flags=re.IGNORECASE)
+    
+        # Нормализуем пробелы
         clean_text = re.sub(r'\s+', ' ', clean_text).strip()
-        
-        # Убираем знаки препинания для более точного подсчета
-        # Оставляем только буквы, цифры и пробелы
+    
+        # Убираем знаки препинания для подсчета, но сохраняем украинские буквы
         word_text = re.sub(r'[^\w\s]', ' ', clean_text, flags=re.UNICODE)
-        
-        # Разделяем по пробелам и фильтруем пустые строки
-        words = [word for word in word_text.split() if len(word.strip()) > 0]
-        
+    
+        # Разделяем по пробелам и фильтруем
+        words = []
+        for word in word_text.split():
+            word = word.strip()
+            # Исключаем числа и очень короткие слова
+            if len(word) >= 2 and not word.isdigit():
+                words.append(word)
+    
         return len(words)
     
     def extract_clean_article_content(self, soup):
         """ПРАВИЛЬНОЕ извлечение ТОЛЬКО основного текста статьи без служебной информации"""
         
-        # Сначала удаляем все ненужные элементы
+       # Создаем копию для безопасной модификации
+        soup_copy = BeautifulSoup(str(soup), 'html.parser')
+    
+        # Удаляем все ненужные элементы ПОЛНОСТЬЮ
         unwanted_selectors = [
-            'script', 'style', 'iframe', 'noscript',
+            'script', 'style', 'iframe', 'noscript', 'svg',
             'header', 'nav', 'footer', 'aside',
+            '.header', '.footer', '.navigation', '.nav',
             '[class*="ad"]', '[class*="banner"]', '[class*="advertisement"]',
             '[class*="social"]', '[class*="share"]', '[class*="related"]',
             '[class*="comment"]', '[class*="sidebar"]', '[class*="widget"]',
-            '.breadcrumb', '.tags', '.meta', '.author', '.date',
-            '.navigation', '.pagination', '.menu', '.header', '.footer'
+            '.breadcrumb', '.tags', '.meta', '.author', '.date', '.time',
+            '.article-date', '.publish-date', '.news-date',
+            '[class*="date"]', '[class*="time"]', '[class*="meta"]',
+            # Специфично для football.ua
+            '.social-buttons', '.article-info', '.news-info',
+            '.photo-credit', '.image-caption', '.getty-images'
         ]
-        
-        # Создаем копию soup чтобы не повредить оригинал
-        soup_copy = BeautifulSoup(str(soup), 'html.parser')
-        
+    
         for selector in unwanted_selectors:
             for element in soup_copy.select(selector):
                 element.decompose()
-        
-        # Ищем основной контент статьи
-        main_content_selectors = [
-            '.article-content',
-            '.news-content', 
-            '.post-content',
-            '.main-content',
-            '.article-body',
-            '.news-body',
-            '.content',
-            'article .content',
-            '.text-content',
-            '[class*="article"] .content',
-            '[class*="news"] .content'
+    
+        # Ищем основной текст статьи
+        main_selectors = [
+            '.article-content p',
+            '.news-content p', 
+            '.post-content p',
+            '.main-content p',
+            '.article-body p',
+            '.content p',
+            'article p'
         ]
-        
-        main_content = ""
-        
-        for selector in main_content_selectors:
-            content_elem = soup_copy.select_one(selector)
-            if content_elem:
-                print(f"🎯 Найден основной контент через селектор: {selector}")
-                
-                # Извлекаем только текст из параграфов
-                paragraphs = content_elem.find_all('p')
-                if paragraphs:
-                    paragraph_texts = []
-                    for p in paragraphs:
-                        p_text = p.get_text(strip=True)
-                        # Фильтруем короткие и служебные параграфы
-                        if (len(p_text) > 20 and 
-                            not any(skip in p_text.lower() for skip in [
-                                'читайте також', 'підписуйтесь', 'стежите',
-                                'джерело', 'фото', 'відео', 'реклама',
-                                'cookie', 'підпис', 'читайте',
-                                'telegram', 'facebook', 'twitter', 'instagram'
-                            ])):
-                            paragraph_texts.append(p_text)
-                    
-                    main_content = ' '.join(paragraph_texts)
-                    if main_content:
-                        break
-        
-        # Если основной селектор не сработал, пытаемся найти article или основной div
-        if not main_content:
-            print("⚠️ Основной селектор не найден, ищем через article/div")
+    
+        article_paragraphs = []
+    
+        for selector in main_selectors:
+            paragraphs = soup_copy.select(selector)
+            if paragraphs:
+                print(f"🎯 Найдены параграфы через селектор: {selector}")
+                article_paragraphs = paragraphs
+                break
+    
+        # Если не нашли через селекторы, ищем все параграфы
+        if not article_paragraphs:
+            print("⚠️ Используем все параграфы на странице")
+            article_paragraphs = soup_copy.find_all('p')
+    
+        # Извлекаем только содержательные параграфы
+        meaningful_paragraphs = []
+    
+        for p in article_paragraphs:
+            p_text = p.get_text(strip=True)
             
-            # Пытаемся найти тег article
-            article_tag = soup_copy.find('article')
-            if article_tag:
-                paragraphs = article_tag.find_all('p')
-                paragraph_texts = []
-                for p in paragraphs:
-                    p_text = p.get_text(strip=True)
-                    if (len(p_text) > 20 and 
-                        not any(skip in p_text.lower() for skip in [
-                            'читайте також', 'підписуйтесь', 'стежите',
-                            'джерело', 'фото', 'відео', 'реклама',
-                            'cookie', 'підпис', 'читайте',
-                            'telegram', 'facebook', 'twitter', 'instagram'
-                        ])):
-                        paragraph_texts.append(p_text)
-                
-                main_content = ' '.join(paragraph_texts)
-        
-        # В крайнем случае, ищем все параграфы на странице
-        if not main_content:
-            print("⚠️ Article не найден, ищем все параграфы")
-            all_paragraphs = soup_copy.find_all('p')
-            meaningful_paragraphs = []
-            
-            for p in all_paragraphs:
-                p_text = p.get_text(strip=True)
-                # Более строгая фильтрация
-                if (len(p_text) > 30 and 
-                    not any(skip in p_text.lower() for skip in [
-                        'cookie', 'реклам', 'підпис', 'фото', 'джерело',
-                        'читайте також', 'підписуйтесь', 'коментар',
-                        'telegram', 'facebook', 'twitter', 'instagram',
-                        'слідкуйте', 'новини', 'головн', 'спорт',
-                        'футбол.ua', 'football.ua', 'сайт', 'портал'
-                    ]) and
-                    # Проверяем, что это не навигация или меню
-                    len([word for word in p_text.split() if len(word) > 2]) > 5):
-                    meaningful_paragraphs.append(p_text)
-            
-            # Берем только первые параграфы (обычно основной текст идет в начале)
-            main_content = ' '.join(meaningful_paragraphs[:10])
-        
-        print(f"📄 Извлечено {len(main_content)} символов чистого контента")
+            # Фильтруем служебные параграфы
+            if (len(p_text) > 15 and  # Минимальная длина
+                not any(skip_phrase in p_text.lower() for skip_phrase in [
+                    'getty images', 'фото:', 'джерело:', 'читайте також',
+                    'підписуйтесь', 'стежите', 'telegram', 'facebook', 'twitter',
+                    'про це повідомляє', 'football.ua', 'футбол.ua',
+                    'cookie', 'реклам', 'коментар'
+                ]) and
+                # Исключаем параграфы только с датой/временем
+                not re.match(r'^\d{1,2}\s+\w+\s+\d{4},\s+\d{1,2}:\d{2}$', p_text) and
+                # Исключаем параграфы только с именами и источниками
+                not re.match(r'^[А-ЯІЄ][а-яієї]+\s+[А-ЯІЄ][а-яієї]+,\s*getty images$', p_text, re.IGNORECASE)
+            ):
+                meaningful_paragraphs.append(p_text)
+    
+        # Объединяем содержательные параграфы
+        main_content = ' '.join(meaningful_paragraphs)
+    
+        print(f"📄 Извлечено {len(main_content)} символов основного текста")
+        print(f"📊 Из {len(meaningful_paragraphs)} содержательных параграфов")
+    
         return main_content
     
     def get_full_article_data(self, news_item, since_time: Optional[datetime] = None):
         """ОПТИМИЗИРОВАННЫЙ метод получения полных данных статьи с быстрой проверкой времени"""
         url = news_item['url']
         soup = self.get_page_content(url)
-        
+    
         if not soup:
             return None
-        
+    
         try:
-            # БЫСТРАЯ ПРОВЕРКА ВРЕМЕНИ В НАЧАЛЕ
+            # Проверка времени как было
             if since_time:
-                # Определяем время публикации ПЕРВЫМ делом
                 publish_time = self.estimate_article_publish_time(soup, url)
-                
                 if publish_time and publish_time <= since_time:
-                    print(f"⏰ Статья опубликована {publish_time.strftime('%H:%M %d.%m')} - старая (до {since_time.strftime('%H:%M %d.%m')})")
-                    # Возвращаем None сразу, не тратя время на извлечение контента
+                    print(f"⏰ Статья опубликована {publish_time.strftime('%H:%M %d.%m')} - старая")
                     return None
-                elif publish_time:
-                    print(f"✅ Статья опубликована {publish_time.strftime('%H:%M %d.%m')} - новая!")
-                else:
-                    # Если не смогли определить точное время, считаем статью новой
-                    print(f"⚠️ Время публикации не определено - считаем статью новой")
             else:
-                # Если фильтрация по времени не нужна, все равно пытаемся определить время для статистики
                 publish_time = self.estimate_article_publish_time(soup, url)
-            
-            # ТОЛЬКО ЕСЛИ СТАТЬЯ ПРОШЛА ПРОВЕРКУ ПО ВРЕМЕНИ - извлекаем контент
-            print("📄 Извлекаем контент статьи...")
+        
+            # ИСПРАВЛЕННОЕ извлечение контента
+            print("📄 Извлекаем ТОЛЬКО основной текст статьи...")
             clean_content = self.extract_clean_article_content(soup)
-            
-            # Подсчитываем количество слов в ЧИСТОМ контенте
+        
+            # ИСПРАВЛЕННЫЙ подсчет слов
             word_count = self.count_words(clean_content)
-            print(f"📊 Количество слов в ЧИСТОЙ статье: {word_count}")
-            
-            # Проверяем длину ЧИСТОГО контента
+            print(f"📊 ТОЧНОЕ количество слов: {word_count}")
+        
+            # Показываем первые 200 символов для отладки
+            preview = clean_content[:200] + "..." if len(clean_content) > 200 else clean_content
+            print(f"🔍 Первые символы: {preview}")
+        
+            # Проверяем длину
             if word_count > 500:
                 print(f"📏 Статья слишком длинная ({word_count} слов > 500) - пропускаем")
                 return None
-            
-            print(f"✅ Статья подходит по длине ({word_count} слов ≤ 500)")
-            
-            # Создаем краткую выжимку из чистого контента
+        
+            print(f"✅ Статья подходит ({word_count} слов ≤ 500)")
+        
+            # Создаем краткую выжимку
             summary = self.create_summary(clean_content, news_item['title'])
-            
+        
             # Ищем изображение
             image_url = self.extract_main_image(soup, url)
             
@@ -527,7 +507,7 @@ class FootballUATargetedParser:
                 'publish_time': publish_time,
                 'word_count': word_count
             }
-            
+        
         except Exception as e:
             print(f"❌ Ошибка обработки {url}: {e}")
             return None
