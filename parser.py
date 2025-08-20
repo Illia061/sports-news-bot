@@ -339,7 +339,7 @@ class FootballUATargetedParser:
             return None
     
     def count_words(self, text: str) -> int:
-           """ТОЧНЫЙ подсчет слов как делает человек - только значимые слова"""
+        """ТОЧНЫЙ подсчет слов как делает человек - только значимые слова"""
         if not text:
             return 0
     
