@@ -197,6 +197,9 @@ def translate_and_format_onefootball(article_data: Dict[str, Any]) -> Dict[str, 
             r'короткий опис українською:?\s*',
             r'опис українською:?\s*',
             r'Текст поста:?\s*',
+            r'СЕНСАЦІЯ:?\s*',
+            r'Відео голів?\s*',
+            r'\*\*КОРОТКИЙ ПОСТ\*\*\s*',
             r'переклад:?\s*',
             r'\[ЗАГОЛОВОК\]\s*',
             r'\[ОПИС\]\s*',
@@ -349,7 +352,7 @@ def create_enhanced_summary(article_data: Dict[str, Any]) -> str:
 Заголовок: {title}
 Текст: {content}
 
-КОРОТКИЙ ПОСТ:"""
+"""
 
     try:
         response = model.generate_content(prompt)
@@ -417,7 +420,7 @@ def format_for_social_media(article_data: Dict[str, Any]) -> str:
     })
 
     # Убираем нежелательные префиксы
-    unwanted_prefixes = ["Інше", "Італія", "Іспанія", "Німеччина", "Чемпіонат", "Сьогодні", "Вчера"]
+    unwanted_prefixes = ["Інше", "Чемпіонат", "Сьогодні", "Вчера"]
     for prefix in unwanted_prefixes:
         if ai_summary.startswith(prefix):
             ai_summary = ai_summary[len(prefix):].strip(": ").lstrip()
@@ -426,7 +429,7 @@ def format_for_social_media(article_data: Dict[str, Any]) -> str:
     if source == 'ESPN Soccer':
         post = f"<b>🌍 {title}</b>\n\n{ai_summary}\n\n📰 ESPN Soccer\n#футбол #новини #ESPN #світ"
     else:
-        post = f"<b>⚽ {title}</b>\n\n{ai_summary}\n\n#футбол #новини #спорт"
+        post = f"<b>⚽ {title}</b>\n\n{ai_summary}\n\n#футбол #новини #спорт  #champoinsleague"
     
     # Проверяем лимит Telegram
     if len(post) > CONFIG['TELEGRAM_MESSAGE_LIMIT']:
@@ -447,7 +450,7 @@ def format_for_social_media(article_data: Dict[str, Any]) -> str:
             if source == 'ESPN Soccer':
                 post = f"<b>🌍 {title}</b>\n\n{ai_summary}\n\n📰 ESPN Soccer\n#футбол #новини #ESPN #світ"
             else:
-                post = f"<b>⚽ {title}</b>\n\n{ai_summary}\n\n#футбол #новини #спорт"
+                post = f"<b>⚽ {title}</b>\n\n{ai_summary}\n\n#футбол #новини #спорт #champoinsleague"
     
     logger.info(f"Готовый пост [{source}]: {len(post)} символов")
     return post
