@@ -360,10 +360,10 @@ class FootballUATargetedParser:
             print(f"📊 ТОЧНОЕ количество слов: {word_count}")
             preview = clean_content[:200] + "..." if len(clean_content) > 200 else clean_content
             print(f"🔍 Первые символы: {preview}")
-            if word_count > 500:
-                print(f"📏 Статья слишком длинная ({word_count} слов > 500) - пропускаем")
+            if word_count > 600:
+                print(f"📏 Статья слишком длинная ({word_count} слов > 600) - пропускаем")
                 return None
-            print(f"✅ Статья подходит ({word_count} слов ≤ 500)")
+            print(f"✅ Статья подходит ({word_count} слов ≤ 600)")
             summary = self.create_summary(clean_content, news_item['title'])
             image_url = self.extract_main_image(soup, url)
             return {
