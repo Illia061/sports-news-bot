@@ -1,7 +1,9 @@
-
 {
   "build": {
     "command": "pip install -r requirements.txt"
   },
-  "start": "python scheduler.py"
+  "start": "python scheduler.py",
+  "deploy": {
+    "restartPolicyType": "never"
+  }
 }
