@@ -2,7 +2,7 @@ import os
 import requests
 from typing import Dict, Any
 from urllib.parse import urlparse
-import google.generativeai as genai
+from openai import OpenAI
 import time
 from bs4 import BeautifulSoup
 import logging
@@ -26,31 +26,41 @@ CONFIG = {
     ]
 }
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+XAI_API_KEY = os.getenv("XAI_API_KEY")
 GEMINI_AVAILABLE = False
-model = None
+client = None
 
 def init_gemini():
-    """Инициализирует клиента Gemini."""
-    global GEMINI_AVAILABLE, model
+    """Инициализирует клиента Grok (xAI)."""
+    global GEMINI_AVAILABLE, client
     if GEMINI_AVAILABLE:  # Кэшируем результат
         return
-    if not GEMINI_API_KEY:
-        logger.warning("GEMINI_API_KEY не найден - AI функции отключены")
+    if not XAI_API_KEY:
+        logger.warning("XAI_API_KEY не найден - AI функции отключены")
         return
     try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel("gemini-2.5-flash")
+        client = OpenAI(
+            api_key=XAI_API_KEY,
+            base_url="https://api.x.ai/v1"
+        )
         GEMINI_AVAILABLE = True
-        logger.info("Gemini инициализирован")
+        logger.info("Grok (xAI) инициализирован")
     except Exception as e:
-        logger.error(f"Ошибка инициализации Gemini: {e}")
+        logger.error(f"Ошибка инициализации Grok: {e}")
 
 def has_gemini_key() -> bool:
-    """Проверяет наличие ключа Gemini и инициализирует, если нужно."""
+    """Проверяет наличие ключа xAI и инициализирует, если нужно."""
     if not GEMINI_AVAILABLE:
         init_gemini()
     return GEMINI_AVAILABLE
+
+def _call_grok(prompt: str) -> str:
+    """Вспомогательная функция для вызова Grok API."""
+    response = client.chat.completions.create(
+        model="grok-3-mini",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return response.choices[0].message.content
 
 def fetch_full_article_content(url: str) -> str:
     """Загружает полный текст статьи по URL."""
@@ -122,17 +132,17 @@ def translate_and_format_onefootball(article_data: Dict[str, Any]) -> Dict[str, 
     logger.info(f"OneFootball: начинаем перевод статьи: {title[:50]}...")
     
     if not has_gemini_key():
-        logger.error("OneFootball: GEMINI_API_KEY отсутствует - перевод невозможен")
+        logger.error("OneFootball: XAI_API_KEY отсутствует - перевод невозможен")
         return {
             'translated_title': f"[НЕ ПЕРЕВЕДЕНО] {title}",
-            'translated_content': "Перевод недоступен - отсутствует Gemini API ключ"
+            'translated_content': "Перевод недоступен - отсутствует xAI API ключ"
         }
     
-    if not model:
-        logger.error("OneFootball: модель Gemini не инициализирована")
+    if not client:
+        logger.error("OneFootball: клиент Grok не инициализирован")
         return {
             'translated_title': f"[НЕ ПЕРЕВЕДЕНО] {title}",
-            'translated_content': "Перевод недоступен - ошибка инициализации Gemini"
+            'translated_content': "Перевод недоступен - ошибка инициализации Grok"
         }
     
     # Собираем весь доступный контент
@@ -171,18 +181,9 @@ def translate_and_format_onefootball(article_data: Dict[str, Any]) -> Dict[str, 
 Другий рядок: короткий опис українською (3-5 речень з ключовими фактами, що не повторюють заголовок)"""
 
     try:
-        logger.info("OneFootball: відправляємо запит до Gemini...")
-        response = model.generate_content(prompt)
-        
-        if not response or not response.text:
-            logger.error("OneFootball: Gemini повернув пустий відповідь")
-            return {
-                'translated_title': f"[ПОМИЛКА API] {title}",
-                'translated_content': "Gemini не повернув результат"
-            }
-        
-        raw_result = response.text.strip()
-        logger.info(f"OneFootball: сырой ответ Gemini: '{raw_result[:200]}...'")
+        logger.info("OneFootball: відправляємо запит до Grok...")
+        raw_result = _call_grok(prompt).strip()
+        logger.info(f"OneFootball: сырой ответ Grok: '{raw_result[:200]}...'")
         
         # ОЧИСТКА ОТ МУСОРНЫХ ТЕГОВ И ФРАЗ
         cleaned_result = raw_result
@@ -304,7 +305,7 @@ def translate_and_format_onefootball(article_data: Dict[str, Any]) -> Dict[str, 
         return result
         
     except Exception as e:
-        logger.error(f"OneFootball: ошибка Gemini API: {e}", exc_info=True)
+        logger.error(f"OneFootball: ошибка Grok API: {e}", exc_info=True)
         return {
             'translated_title': f"[ОШИБКА ПЕРЕВОДА] {title}",
             'translated_content': f"Ошибка перевода: {str(e)}"
@@ -325,7 +326,7 @@ def create_enhanced_summary(article_data: Dict[str, Any]) -> str:
     summary = article_data.get('summary', '')
     url = article_data.get('url', '')
     
-    if not has_gemini_key() or not model:
+    if not has_gemini_key() or not client:
         return create_basic_summary(article_data)
 
     # Для других источников
@@ -360,8 +361,7 @@ def create_enhanced_summary(article_data: Dict[str, Any]) -> str:
 Почни відповідь відразу з ключових фактів:"""
 
     try:
-        response = model.generate_content(prompt)
-        summary_result = response.text.strip()
+        summary_result = _call_grok(prompt).strip()
         
         # Дополнительная проверка на повторение заголовка
         if summary_result.lower().startswith(title.lower()[:20]):
@@ -380,7 +380,7 @@ def create_enhanced_summary(article_data: Dict[str, Any]) -> str:
         return summary_result
         
     except Exception as e:
-        logger.error(f"Ошибка Gemini: {e}")
+        logger.error(f"Ошибка Grok: {e}")
         time.sleep(1)
         return content[:200] + '...' if len(content) > 200 else content
 
