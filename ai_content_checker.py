@@ -4,27 +4,29 @@ import requests
 import time
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
-import google.generativeai as genai
+from openai import OpenAI
 
 from db import cursor
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+XAI_API_KEY = os.getenv("XAI_API_KEY")
 GEMINI_AVAILABLE = False
-model = None
+client = None
 
 
 def init_gemini():
-    global GEMINI_AVAILABLE, model
-    if not GEMINI_API_KEY:
-        print("⚠️ GEMINI_API_KEY не найден - используем базовую проверку дубликатов")
+    global GEMINI_AVAILABLE, client
+    if not XAI_API_KEY:
+        print("⚠️ XAI_API_KEY не найден - используем базовую проверку дубликатов")
         return
     try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel("gemini-2.5-flash")
+        client = OpenAI(
+            api_key=XAI_API_KEY,
+            base_url="https://api.x.ai/v1"
+        )
         GEMINI_AVAILABLE = True
-        print("✅ Gemini инициализирован для проверки дубликатов")
+        print("✅ Grok (xAI) инициализирован для проверки дубликатов")
     except Exception as e:
-        print(f"❌ Ошибка инициализации Gemini: {e}")
+        print(f"❌ Ошибка инициализации Grok: {e}")
 
 
 def has_gemini_key() -> bool:
@@ -64,7 +66,7 @@ class AIContentSimilarityChecker:
 
     def ai_compare_texts(self, new_text: str, existing_texts: List[str]) -> Dict[str, Any]:
         """Улучшенная AI-проверка дубликатов с детальным анализом."""
-        if not has_gemini_key() or not model:
+        if not has_gemini_key() or not client:
             return {"ai_available": False, "similarities": [], "is_duplicate": False}
 
         clean_new_text = self.clean_text_for_ai(new_text)
@@ -99,8 +101,11 @@ class AIContentSimilarityChecker:
 СХОЖІСТЬ З: [номер існуючої новини або "ЖОДНА"]"""
 
         try:
-            response = model.generate_content(prompt)
-            ai_response = response.text.strip()
+            response = client.chat.completions.create(
+                model="grok-3-mini",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            ai_response = response.choices[0].message.content.strip()
             
             # Парсим відповідь AI
             is_duplicate = False
@@ -125,7 +130,7 @@ class AIContentSimilarityChecker:
                 "is_duplicate": is_duplicate,
             }
         except Exception as e:
-            print(f"❌ Ошибка AI анализа: {e}")
+            print(f"❌ Ошибка Grok анализа: {e}")
             return {"ai_available": False, "error": str(e), "similarities": [], "is_duplicate": False}
 
     def fallback_similarity_check(self, text1: str, text2: str) -> float:
@@ -378,4 +383,3 @@ def check_articles_similarity(articles: List[Dict[str, Any]], threshold: float =
     
     print(f"📊 Результат: {len(unique_articles)}/{len(articles)} уникальных статей")
     return unique_articles
-
