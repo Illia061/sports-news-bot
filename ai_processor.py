@@ -26,38 +26,38 @@ CONFIG = {
     ]
 }
 
-XAI_API_KEY = os.getenv("XAI_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GEMINI_AVAILABLE = False
 client = None
 
 def init_gemini():
-    """Инициализирует клиента Grok (xAI)."""
+    """Инициализирует клиента Groq."""
     global GEMINI_AVAILABLE, client
-    if GEMINI_AVAILABLE:  
+    if GEMINI_AVAILABLE:  # Кэшируем результат
         return
-    if not XAI_API_KEY:
-        logger.warning("XAI_API_KEY не найден - AI функции отключены")
+    if not GROQ_API_KEY:
+        logger.warning("GROQ_API_KEY не найден - AI функции отключены")
         return
     try:
         client = OpenAI(
-            api_key=XAI_API_KEY,
-            base_url="https://api.x.ai/v1"
+            api_key=GROQ_API_KEY,
+            base_url="https://api.groq.com/openai/v1"
         )
         GEMINI_AVAILABLE = True
-        logger.info("Grok (xAI) инициализирован")
+        logger.info("Groq инициализирован")
     except Exception as e:
-        logger.error(f"Ошибка инициализации Grok: {e}")
+        logger.error(f"Ошибка инициализации Groq: {e}")
 
 def has_gemini_key() -> bool:
-    """Проверяет наличие ключа xAI и инициализирует, если нужно."""
+    """Проверяет наличие ключа Groq и инициализирует, если нужно."""
     if not GEMINI_AVAILABLE:
         init_gemini()
     return GEMINI_AVAILABLE
 
 def _call_grok(prompt: str) -> str:
-    """Вспомогательная функция для вызова Grok API."""
+    """Вспомогательная функция для вызова Groq API."""
     response = client.chat.completions.create(
-        model="grok-3-mini",
+        model="llama-3.3-70b-versatile",
         messages=[{"role": "user", "content": prompt}]
     )
     return response.choices[0].message.content
@@ -132,17 +132,17 @@ def translate_and_format_onefootball(article_data: Dict[str, Any]) -> Dict[str, 
     logger.info(f"OneFootball: начинаем перевод статьи: {title[:50]}...")
     
     if not has_gemini_key():
-        logger.error("OneFootball: XAI_API_KEY отсутствует - перевод невозможен")
+        logger.error("OneFootball: GROQ_API_KEY отсутствует - перевод невозможен")
         return {
             'translated_title': f"[НЕ ПЕРЕВЕДЕНО] {title}",
-            'translated_content': "Перевод недоступен - отсутствует xAI API ключ"
+            'translated_content': "Перевод недоступен - отсутствует Groq API ключ"
         }
     
     if not client:
-        logger.error("OneFootball: клиент Grok не инициализирован")
+        logger.error("OneFootball: клиент Groq не инициализирован")
         return {
             'translated_title': f"[НЕ ПЕРЕВЕДЕНО] {title}",
-            'translated_content': "Перевод недоступен - ошибка инициализации Grok"
+            'translated_content': "Перевод недоступен - ошибка инициализации Groq"
         }
     
     # Собираем весь доступный контент
@@ -181,9 +181,9 @@ def translate_and_format_onefootball(article_data: Dict[str, Any]) -> Dict[str, 
 Другий рядок: короткий опис українською (3-5 речень з ключовими фактами, що не повторюють заголовок)"""
 
     try:
-        logger.info("OneFootball: відправляємо запит до Grok...")
+        logger.info("OneFootball: відправляємо запит до Groq...")
         raw_result = _call_grok(prompt).strip()
-        logger.info(f"OneFootball: сырой ответ Grok: '{raw_result[:200]}...'")
+        logger.info(f"OneFootball: сырой ответ Groq: '{raw_result[:200]}...'")
         
         # ОЧИСТКА ОТ МУСОРНЫХ ТЕГОВ И ФРАЗ
         cleaned_result = raw_result
@@ -305,7 +305,7 @@ def translate_and_format_onefootball(article_data: Dict[str, Any]) -> Dict[str, 
         return result
         
     except Exception as e:
-        logger.error(f"OneFootball: ошибка Grok API: {e}", exc_info=True)
+        logger.error(f"OneFootball: ошибка Groq API: {e}", exc_info=True)
         return {
             'translated_title': f"[ОШИБКА ПЕРЕВОДА] {title}",
             'translated_content': f"Ошибка перевода: {str(e)}"
@@ -380,7 +380,7 @@ def create_enhanced_summary(article_data: Dict[str, Any]) -> str:
         return summary_result
         
     except Exception as e:
-        logger.error(f"Ошибка Grok: {e}")
+        logger.error(f"Ошибка Groq: {e}")
         time.sleep(1)
         return content[:200] + '...' if len(content) > 200 else content
 
