@@ -8,25 +8,25 @@ from openai import OpenAI
 
 from db import cursor
 
-XAI_API_KEY = os.getenv("XAI_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GEMINI_AVAILABLE = False
 client = None
 
 
 def init_gemini():
     global GEMINI_AVAILABLE, client
-    if not XAI_API_KEY:
-        print("⚠️ XAI_API_KEY не найден - используем базовую проверку дубликатов")
+    if not GROQ_API_KEY:
+        print("⚠️ GROQ_API_KEY не найден - используем базовую проверку дубликатов")
         return
     try:
         client = OpenAI(
-            api_key=XAI_API_KEY,
-            base_url="https://api.x.ai/v1"
+            api_key=GROQ_API_KEY,
+            base_url="https://api.groq.com/openai/v1"
         )
         GEMINI_AVAILABLE = True
-        print("✅ Grok (xAI) инициализирован для проверки дубликатов")
+        print("✅ Groq инициализирован для проверки дубликатов")
     except Exception as e:
-        print(f"❌ Ошибка инициализации Grok: {e}")
+        print(f"❌ Ошибка инициализации Groq: {e}")
 
 
 def has_gemini_key() -> bool:
@@ -102,7 +102,7 @@ class AIContentSimilarityChecker:
 
         try:
             response = client.chat.completions.create(
-                model="grok-3-mini",
+                model="llama-3.3-70b-versatile",
                 messages=[{"role": "user", "content": prompt}]
             )
             ai_response = response.choices[0].message.content.strip()
@@ -130,7 +130,7 @@ class AIContentSimilarityChecker:
                 "is_duplicate": is_duplicate,
             }
         except Exception as e:
-            print(f"❌ Ошибка Grok анализа: {e}")
+            print(f"❌ Ошибка Groq анализа: {e}")
             return {"ai_available": False, "error": str(e), "similarities": [], "is_duplicate": False}
 
     def fallback_similarity_check(self, text1: str, text2: str) -> float:
