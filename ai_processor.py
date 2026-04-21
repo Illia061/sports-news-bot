@@ -33,7 +33,7 @@ client = None
 def init_gemini():
     """Инициализирует клиента Grok (xAI)."""
     global GEMINI_AVAILABLE, client
-    if GEMINI_AVAILABLE:  # Кэшируем результат
+    if GEMINI_AVAILABLE:  
         return
     if not XAI_API_KEY:
         logger.warning("XAI_API_KEY не найден - AI функции отключены")
